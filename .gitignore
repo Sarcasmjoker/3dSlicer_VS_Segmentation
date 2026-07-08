@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# CMake build artifacts (if the extension is ever built as a superbuild)
+build/
+CMakeCache.txt
+CMakeFiles/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+
+# Local scratch output some users may generate while testing
+*.log

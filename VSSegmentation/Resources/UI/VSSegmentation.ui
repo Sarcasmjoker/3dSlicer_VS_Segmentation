@@ -1,0 +1,216 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>VSSegmentation</class>
+ <widget class="qMRMLWidget" name="VSSegmentation">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>500</width><height>720</height></rect>
+  </property>
+  <property name="windowTitle"><string>VS Segmentation</string></property>
+  <layout class="QVBoxLayout" name="mainLayout" stretch="0,0,0,0,0,1,0">
+
+   <!-- ── Input queue ─────────────────────────────────────────────── -->
+   <item>
+    <widget class="ctkCollapsibleButton" name="inputCollapsible">
+     <property name="text"><string>Input images</string></property>
+     <layout class="QVBoxLayout">
+
+      <!-- Quick add from scene -->
+      <item>
+       <layout class="QHBoxLayout">
+        <item>
+         <widget class="QLabel">
+          <property name="text"><string>Scene volume:</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="qMRMLNodeComboBox" name="inputVolumeSelector">
+          <property name="nodeTypes"><stringlist><string>vtkMRMLScalarVolumeNode</string></stringlist></property>
+          <property name="selectNodeUponCreation"><bool>true</bool></property>
+          <property name="addEnabled"><bool>false</bool></property>
+          <property name="removeEnabled"><bool>false</bool></property>
+          <property name="noneEnabled"><bool>true</bool></property>
+          <property name="showHidden"><bool>false</bool></property>
+          <property name="showChildNodeTypes"><bool>false</bool></property>
+          <property name="toolTip"><string>Pick a ceT1 volume already loaded in the scene</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="addVolumeButton">
+          <property name="text"><string>Add to queue</string></property>
+          <property name="toolTip"><string>Append the selected scene volume to the processing queue</string></property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+
+      <!-- Add from disk -->
+      <item>
+       <layout class="QHBoxLayout">
+        <item>
+         <widget class="QPushButton" name="addFilesButton">
+          <property name="text"><string>Add files…</string></property>
+          <property name="toolTip"><string>Select one or more .nrrd / .nii.gz files from disk</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="addFolderButton">
+          <property name="text"><string>Add folder…</string></property>
+          <property name="toolTip"><string>Add all supported images in a folder</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="removeButton">
+          <property name="text"><string>Remove selected</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="clearButton">
+          <property name="text"><string>Clear all</string></property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+
+      <!-- Queue table -->
+      <item>
+       <widget class="QTableWidget" name="queueTable">
+        <property name="minimumHeight"><number>120</number></property>
+        <property name="alternatingRowColors"><bool>true</bool></property>
+       </widget>
+      </item>
+
+     </layout>
+    </widget>
+   </item>
+
+   <!-- ── Model ────────────────────────────────────────────────────── -->
+   <item>
+    <widget class="ctkCollapsibleButton" name="modelCollapsible">
+     <property name="text"><string>Model</string></property>
+     <layout class="QFormLayout">
+      <item row="0" column="0">
+       <widget class="QLabel"><property name="text"><string>Segmentation model:</string></property></widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="modelSelector"/>
+      </item>
+      <item row="1" column="0" colspan="2">
+       <widget class="QCheckBox" name="postprocessCheckBox">
+        <property name="text"><string>Post-processing: keep largest connected region</string></property>
+        <property name="checked"><bool>true</bool></property>
+       </widget>
+      </item>
+      <item row="2" column="0" colspan="2">
+       <widget class="QCheckBox" name="autoLoadCheckBox">
+        <property name="text"><string>Auto-load results into Slicer scene</string></property>
+        <property name="checked"><bool>true</bool></property>
+        <property name="toolTip"><string>When checked, each finished segmentation is loaded into the scene automatically. Uncheck for large batches to save memory.</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <!-- ── Environment ─────────────────────────────────────────────── -->
+   <item>
+    <widget class="ctkCollapsibleButton" name="envCollapsible">
+     <property name="text"><string>Environment</string></property>
+     <property name="collapsed"><bool>false</bool></property>
+     <layout class="QFormLayout">
+      <item row="0" column="0">
+       <widget class="QLabel"><property name="text"><string>vs_seg env directory:</string></property></widget>
+      </item>
+      <item row="0" column="1">
+       <layout class="QHBoxLayout">
+        <item><widget class="QLineEdit" name="condaEnvEdit">
+         <property name="placeholderText"><string>C:\Users\xxx\.conda\envs\vs_seg</string></property>
+        </widget></item>
+        <item><widget class="QPushButton" name="condaEnvBrowseButton">
+         <property name="text"><string>Browse…</string></property>
+         <property name="maximumWidth"><number>70</number></property>
+        </widget></item>
+       </layout>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel"><property name="text"><string>nnUNet_results directory:</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <layout class="QHBoxLayout">
+        <item><widget class="QLineEdit" name="resultsPathEdit">
+         <property name="placeholderText"><string>D:\VS\crossmoda2022_training\nnUNet_results</string></property>
+        </widget></item>
+        <item><widget class="QPushButton" name="resultsPathBrowseButton">
+         <property name="text"><string>Browse…</string></property>
+         <property name="maximumWidth"><number>70</number></property>
+        </widget></item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <!-- ── Run / Cancel ─────────────────────────────────────────────── -->
+   <item>
+    <layout class="QHBoxLayout">
+     <item>
+      <widget class="QPushButton" name="runButton">
+       <property name="text"><string>▶  Run segmentation</string></property>
+       <property name="enabled"><bool>false</bool></property>
+       <property name="toolTip"><string>Start processing all queued images</string></property>
+       <property name="minimumHeight"><number>32</number></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="cancelButton">
+       <property name="text"><string>■  Cancel</string></property>
+       <property name="enabled"><bool>false</bool></property>
+       <property name="toolTip"><string>Stop inference after the current image finishes</string></property>
+       <property name="minimumHeight"><number>32</number></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+
+   <!-- ── Log ──────────────────────────────────────────────────────── -->
+   <item>
+    <widget class="ctkCollapsibleButton" name="logCollapsible">
+     <property name="text"><string>Log</string></property>
+     <property name="collapsed"><bool>true</bool></property>
+     <layout class="QVBoxLayout">
+      <item>
+       <widget class="QPlainTextEdit" name="logTextEdit">
+        <property name="readOnly"><bool>true</bool></property>
+        <property name="minimumHeight"><number>100</number></property>
+        <property name="font">
+         <font><family>Courier New</family><pointsize>8</pointsize></font>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <item><spacer><property name="orientation"><enum>Qt::Vertical</enum></property></spacer></item>
+  </layout>
+ </widget>
+
+ <customwidgets>
+  <customwidget>
+   <class>qMRMLWidget</class>
+   <extends>QWidget</extends>
+   <header>qMRMLWidget.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>ctkCollapsibleButton</class>
+   <extends>QWidget</extends>
+   <header>ctkCollapsibleButton.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>qMRMLNodeComboBox</class>
+   <extends>QWidget</extends>
+   <header>qMRMLNodeComboBox.h</header>
+  </customwidget>
+ </customwidgets>
+</ui>

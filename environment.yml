@@ -1,0 +1,38 @@
+name: vs_seg
+# Conda environment for VS Segmentation inference (nnU-Net v2 + PyTorch with CUDA).
+#
+# Usage:
+#   conda env create -f environment.yml
+#   conda activate vs_seg
+#
+# Important notes:
+#   1) torch and torchvision MUST be pinned to matching versions installed
+#      together with nnunetv2 in the SAME pip command. If you install them
+#      separately, installing nnunetv2 (which depends on timm) can silently
+#      pull in a newer torchvision that replaces your CUDA-enabled torch
+#      with a CPU-only build from PyPI -- breaking GPU inference.
+#   2) Pick the CUDA build that matches your GPU driver. The versions below
+#      (torch 2.8.0 + torchvision 0.23.0, cu128) target CUDA 12.8, needed for
+#      NVIDIA Blackwell-generation GPUs (e.g. RTX 50-series). For older GPUs
+#      or drivers, check https://pytorch.org/get-started/locally/ for the
+#      correct --index-url / version pins for your setup.
+#   3) If PyPI / download.pytorch.org is unreachable from your network (e.g.
+#      mainland China), replace the --index-url / --find-links below with a
+#      local mirror, for example:
+#        --index-url https://mirrors.aliyun.com/pypi/simple/
+#        --find-links https://mirrors.aliyun.com/pytorch-wheels/cu128/
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      # --extra-index-url (not --index-url) so PyPI remains the primary
+      # index for nnunetv2/SimpleITK/numpy; only torch/torchvision resolve
+      # against the CUDA wheel index.
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch==2.8.0+cu128
+      - torchvision==0.23.0+cu128
+      - nnunetv2
+      - SimpleITK
+      - numpy
