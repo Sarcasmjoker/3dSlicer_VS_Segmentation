@@ -134,12 +134,16 @@ class VSSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "Dataset501 — 250 ep  (CrossMoDA ceT1 only)", "501")
         self.ui.modelSelector.setCurrentIndex(0)
 
-        # Default paths
+        # Default paths: prefer the models/ directory bundled in this repo,
+        # then fall back to the original dev-machine path.
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        bundled_models = os.path.normpath(os.path.join(module_dir, "..", "models"))
         for path, widget in [
             (r"C:\Users\wuche\.conda\envs\vs_seg", self.ui.condaEnvEdit),
+            (bundled_models,                         self.ui.resultsPathEdit),
             (r"D:\VS\crossmoda2022_training\nnUNet_results", self.ui.resultsPathEdit),
         ]:
-            if os.path.isdir(path):
+            if os.path.isdir(path) and not widget.text:
                 widget.text = path
 
         # Queue table
