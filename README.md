@@ -5,19 +5,18 @@ T1 (ceT1) MRI, built on [nnU-Net v2](https://github.com/MIC-DKFZ/nnUNet) and
 integrated into [3D Slicer](https://www.slicer.org/) as a scripted module.
 
 - **Normalization**: 0.5th-99.9th percentile intensity clipping (matches the
-  preprocessing used to train the models)
+  preprocessing used to train the model)
 - **Inference**: nnU-Net v2, 5-fold ensemble, `3d_fullres`
-- **Two selectable models**:
-  - **Dataset502 (1000 epochs, recommended)** — trained on
-    [CrossMoDA](https://crossmoda-challenge.ml/) ceT1 data plus additional
-    cystic-tumor / varied-spacing cases (215 cases total)
-  - **Dataset501 (250 epochs)** — trained on CrossMoDA ceT1 data only
-    (154 cases)
+- **Model**: Dataset502 (1000 epochs) — trained on
+  [CrossMoDA](https://crossmoda-challenge.ml/) ceT1 data plus additional
+  cystic-tumor / varied-spacing cases (215 cases total)
 - Batch queue with per-item progress, cancellation, and optional auto-load
   of results into the Slicer scene
 
-This repository contains the **extension only**. Pretrained model weights
-are **not** included — see [Model weights](#model-weights) below.
+**Pretrained weights** (Dataset502, 1000 ep) are available on the
+[Releases page](https://github.com/Sarcasmjoker/3dSlicer_VS_Segmentation/releases)
+as `Dataset502_VSmix_checkpoints.zip`. See [Model weights](#model-weights)
+for installation instructions.
 
 ---
 
@@ -55,7 +54,9 @@ compute-intensive. Please read this section before installing.
 2. [Miniforge](https://github.com/conda-forge/miniforge) or another conda
    distribution, for the separate `vs_seg` Python environment (see below —
    this is **not** the same Python that ships inside Slicer)
-3. A set of trained nnU-Net v2 model weights (see [Model weights](#model-weights))
+3. The pretrained model weights — download from the
+   [Releases page](https://github.com/Sarcasmjoker/3dSlicer_VS_Segmentation/releases)
+   and place them in the `models/` directory (see [Model weights](#model-weights))
 
 ## Setting up the vs_seg environment
 
@@ -138,15 +139,24 @@ with `3d_fullres`, 5-fold cross-validation, and point the
 ## Installing the extension in Slicer
 
 1. Clone or download this repository.
-2. Open 3D Slicer.
-3. **Edit → Application Settings → Modules**.
-4. Under **Additional module paths**, click **Add** and select:
+2. Download `Dataset502_VSmix_checkpoints.zip` from the
+   [Releases page](https://github.com/Sarcasmjoker/3dSlicer_VS_Segmentation/releases)
+   and extract the five `checkpoint_final.pth` files into the matching
+   `models/` subdirectories (see [Model weights](#model-weights)).
+3. Open 3D Slicer.
+4. **Edit → Application Settings → Modules**.
+5. Under **Additional module paths**, click **Add** and select:
    ```
    <repo>/VSSegmentation
    ```
-5. Click **OK**; Slicer will prompt for a restart.
-6. After restarting, search for `VS Segmentation` in the module finder, or
+6. Click **OK**; Slicer will prompt for a restart.
+7. After restarting, search for `VS Segmentation` in the module finder, or
    find it under **Segmentation → VS Segmentation**.
+
+> **Tip**: The extension automatically detects the `models/` folder inside
+> the cloned repository and pre-fills the `nnUNet_results directory` field.
+> As long as you extracted the checkpoints into `models/` (step 2), no
+> manual path configuration is needed for the weights.
 
 ---
 
@@ -158,13 +168,13 @@ with `3d_fullres`, 5-fold cross-validation, and point the
    - **Add files…**: select one or more `.nrrd` / `.nii.gz` / `.nii` /
      `.mha` / `.mhd` files from disk
    - **Add folder…**: add every supported image file found in a folder
-2. **Choose a model** — Dataset502 (1000 ep) is recommended by default;
-   switch to Dataset501 (250 ep) if you specifically want the model trained
-   on CrossMoDA data only.
-3. **Set the environment paths** (first run only — remembered afterwards):
+2. **Choose a model** — Dataset502 (1000 ep) is the only bundled model.
+3. **Set the environment paths** (first run only — auto-filled if loading
+   from the cloned repo with weights already placed in `models/`):
    - `vs_seg env directory`: the conda environment root, e.g.
      `C:\Users\you\.conda\envs\vs_seg`
-   - `nnUNet_results directory`: path to your trained model weights
+   - `nnUNet_results directory`: the `models/` folder inside your clone
+     (auto-detected when the extension loads from the repo)
 4. **Click "▶ Run segmentation"**. Each queued item is processed in turn;
    the queue table shows live status per item (Pending → Running → Done /
    Error / Cancelled), with a scrollable log panel below for details.
