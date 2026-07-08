@@ -15,3 +15,7 @@ Thumbs.db
 
 # Local scratch output some users may generate while testing
 *.log
+
+# Model checkpoints -- too large for git (235 MB each).
+# Download from the GitHub Release and place under models/
+*.pth

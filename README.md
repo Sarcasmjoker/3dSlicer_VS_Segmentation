@@ -82,30 +82,58 @@ command.
 
 ## Model weights
 
-**This repository ships code only — no pretrained weights.** nnU-Net
-checkpoints are large binary files (~235 MB per fold, 5 folds per model)
-that don't belong in a source-code repository.
+The pretrained Dataset502 (1000 epochs) checkpoint weights are provided via
+**GitHub Releases** because each fold's `.pth` file is ~235 MB and GitHub's
+100 MB per-file limit prevents committing them directly.
 
-To use this extension you need an `nnUNet_results` directory containing a
-model trained with standard nnU-Net v2 tooling (`nnUNetv2_train`) on ceT1
-VS-segmentation data, with the folder layout nnU-Net produces by default, e.g.:
+### Download and install
+
+1. Go to the [Releases page](https://github.com/Sarcasmjoker/3dSlicer_VS_Segmentation/releases)
+   and download `Dataset502_VSmix_checkpoints.zip`.
+2. Extract the zip. You will get five `checkpoint_final.pth` files, one per
+   fold.
+3. Place each file in the matching `models/` subdirectory of your local clone:
 
 ```
-nnUNet_results/
-└── Dataset502_VSmix/
-    └── nnUNetTrainer__nnUNetPlans__3d_fullres/
-        ├── fold_0/checkpoint_final.pth
-        ├── fold_1/ ... fold_4/
-        └── crossval_results_folds_0_1_2_3_4/
-            ├── postprocessing.pkl
-            └── plans.json
+3dSlicer_VS_Segmentation/
+└── models/
+    └── Dataset502_VSmix/
+        └── nnUNetTrainer__nnUNetPlans__3d_fullres/
+            ├── fold_0/checkpoint_final.pth    ← put here
+            ├── fold_1/checkpoint_final.pth
+            ├── fold_2/checkpoint_final.pth
+            ├── fold_3/checkpoint_final.pth
+            └── fold_4/checkpoint_final.pth
 ```
 
-See the [nnU-Net v2 documentation](https://github.com/MIC-DKFZ/nnUNet) for
-the full training pipeline (data conversion, preprocessing, training,
-`nnUNetv2_find_best_configuration`). If you'd like to reproduce the
-Dataset501/Dataset502 models referenced in this UI, train on CrossMoDA ceT1
-data (label 1 = tumor) with `3d_fullres`, 5-fold cross-validation.
+4. In the Slicer extension, set the **nnUNet_results directory** field to
+   the `models/` folder inside your clone, e.g.:
+   ```
+   C:\Users\you\3dSlicer_VS_Segmentation\models
+   ```
+
+The small configuration files (`plans.json`, `postprocessing.pkl`,
+`nnUNetPlans.json`) are already included in the repository under `models/`,
+so only the `.pth` checkpoint files need to be downloaded separately.
+
+### Model performance (Dataset502, 1000 epochs)
+
+Trained on **215 cases** (CrossMoDA ceT1 + additional cystic/varied-spacing
+cases), evaluated on a held-out test set of 36 cases:
+
+| Subset | n | Dice mean | Dice median | ASSD median |
+|---|---|---|---|---|
+| Overall | 36 | 0.941 | 0.946 | 0.126 mm |
+| CrossMoDA subset | 27 | 0.943 | 0.950 | 0.098 mm |
+| Cystic/new data subset | 9 | 0.937 | 0.942 | 0.230 mm |
+
+### Training from scratch
+
+If you prefer to train your own model, see the
+[nnU-Net v2 documentation](https://github.com/MIC-DKFZ/nnUNet) for the full
+pipeline. Train on ceT1 VS data (label 1 = tumor, label 0 = background)
+with `3d_fullres`, 5-fold cross-validation, and point the
+`nnUNet_results directory` in the extension to your own output directory.
 
 ## Installing the extension in Slicer
 
