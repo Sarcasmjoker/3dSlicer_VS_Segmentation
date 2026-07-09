@@ -23,8 +23,8 @@ for installation instructions.
 ## Contents
 
 - [Minimum hardware requirements](#minimum-hardware-requirements)
-- [Prerequisites](#prerequisites)
-- [Setting up the vs_seg environment](#setting-up-the-vs_seg-environment)
+- [Quick start (one-click installer)](#quick-start-one-click-installer)
+- [Manual environment setup](#manual-environment-setup)
 - [Model weights](#model-weights)
 - [Installing the extension in Slicer](#installing-the-extension-in-slicer)
 - [Usage](#usage)
@@ -48,38 +48,62 @@ compute-intensive. Please read this section before installing.
 
 ---
 
-## Prerequisites
+## Quick start (one-click installer)
 
-1. [3D Slicer](https://download.slicer.org/) ≥ 5.0
-2. [Miniforge](https://github.com/conda-forge/miniforge) or another conda
-   distribution, for the separate `vs_seg` Python environment (see below —
-   this is **not** the same Python that ships inside Slicer)
-3. The pretrained model weights — download from the
+> **No programming experience required.** The installer handles everything
+> automatically.
+
+**Prerequisites (required before running the installer):**
+
+1. A 64-bit Windows PC with an NVIDIA GPU (≥ 8 GB VRAM recommended — see
+   [Minimum hardware requirements](#minimum-hardware-requirements))
+2. [3D Slicer](https://download.slicer.org/) ≥ 5.0 installed
+3. An internet connection for the first-time package download (~4-6 GB)
+
+**Steps:**
+
+1. **Clone or download this repository** (green "Code" button → "Download ZIP",
+   then extract to a folder such as `C:\VS_Segmentation`).
+2. **Download the pretrained weights** from the
    [Releases page](https://github.com/Sarcasmjoker/3dSlicer_VS_Segmentation/releases)
-   and place them in the `models/` directory (see [Model weights](#model-weights))
+   (`Dataset502_VSmix_checkpoints.zip`) and extract the five `.pth` files into
+   the matching `models/` subdirectories (see [Model weights](#model-weights)).
+3. **Double-click `scripts\install_vs_seg.bat`** in the repository folder.
+   The installer will:
+   - Download and silently install
+     [Miniforge](https://github.com/conda-forge/miniforge) (a free, minimal
+     Python distribution) into your user folder — **no administrator rights
+     needed** and your existing Python/software is not affected.
+   - Create a dedicated `vs_seg` Python environment with all required packages
+     (PyTorch with CUDA, nnU-Net v2, SimpleITK, etc.).
+   - Run a GPU self-test and print a clear **PASS / FAIL** result.
+   - Print the exact folder path to paste into the extension's
+     **"vs_seg env directory"** field in Slicer.
+4. **Register the extension in Slicer** (see
+   [Installing the extension in Slicer](#installing-the-extension-in-slicer)).
 
-## Setting up the vs_seg environment
+> **Slow or blocked internet?** The installer will ask if you want to use a
+> mirror (e.g. Aliyun for mainland China networks). Just answer `y` and press
+> Enter when prompted.
 
-3D Slicer embeds its own Python, which cannot `import torch`/`nnunetv2`
-directly (see [Architecture](#architecture-why-a-subprocess)). This
-extension instead calls out to a separate conda environment. Create it once:
+---
+
+## Manual environment setup
+
+If you prefer to set up the environment manually (e.g. on macOS/Linux, or
+if you already have conda installed), run:
 
 ```bash
 conda env create -f environment.yml
 conda activate vs_seg
-```
-
-Then verify GPU access:
-
-```bash
 python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 ```
 
-Expected: `True` and your GPU's name. If `torch.cuda.is_available()` is
-`False`, the most common cause is a torchvision/timm dependency silently
-pulling in a CPU-only torch build — see the comments in `environment.yml`
-and reinstall the pinned CUDA wheels together with `nnunetv2` in one `pip`
-command.
+Expected output: `True` followed by your GPU's name. If
+`torch.cuda.is_available()` returns `False`, the most common cause is a
+dependency silently replacing the CUDA-enabled torch with a CPU-only build.
+See the comments in `environment.yml` and reinstall the pinned CUDA wheels
+together with `nnunetv2` in a single `pip` command.
 
 ## Model weights
 
@@ -138,20 +162,26 @@ with `3d_fullres`, 5-fold cross-validation, and point the
 
 ## Installing the extension in Slicer
 
-1. Clone or download this repository.
+1. Clone or download this repository (if you haven't already — the one-click
+   installer also needs this folder).
 2. Download `Dataset502_VSmix_checkpoints.zip` from the
    [Releases page](https://github.com/Sarcasmjoker/3dSlicer_VS_Segmentation/releases)
    and extract the five `checkpoint_final.pth` files into the matching
    `models/` subdirectories (see [Model weights](#model-weights)).
-3. Open 3D Slicer.
-4. **Edit → Application Settings → Modules**.
-5. Under **Additional module paths**, click **Add** and select:
+3. **Run `scripts\install_vs_seg.bat`** (double-click) to set up Python — or
+   follow the [Manual environment setup](#manual-environment-setup) if you
+   prefer the command line.
+4. Open 3D Slicer.
+5. **Edit → Application Settings → Modules**.
+6. Under **Additional module paths**, click **Add** and select:
    ```
-   <repo>/VSSegmentation
+   <repo>\VSSegmentation
    ```
-6. Click **OK**; Slicer will prompt for a restart.
-7. After restarting, search for `VS Segmentation` in the module finder, or
+7. Click **OK**; Slicer will prompt for a restart.
+8. After restarting, search for `VS Segmentation` in the module finder, or
    find it under **Segmentation → VS Segmentation**.
+9. In the **"vs_seg env directory"** field, paste the path printed by the
+   installer at the end of step 3.
 
 > **Tip**: The extension automatically detects the `models/` folder inside
 > the cloned repository and pre-fills the `nnUNet_results directory` field.
