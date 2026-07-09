@@ -1,309 +1,324 @@
 <#
 .SYNOPSIS
-  One-click installer for the "vs_seg" conda environment used by the
-  VS Segmentation 3D Slicer extension.
-
-.DESCRIPTION
-  Designed for users with NO programming background. Double-click
-  install_vs_seg.bat in the same folder instead of running this file
-  directly -- that wrapper launches this script with the correct options
-  and keeps the window open so you can read the results.
-
-  What this script does, step by step:
-    1. Looks for an existing conda/Miniforge/Anaconda installation.
-    2. If none is found, downloads and silently installs Miniforge3
-       (a minimal, free Python distribution) for the current user only
-       -- no administrator rights required.
-    3. Creates (or updates) a dedicated "vs_seg" environment from the
-       environment.yml file included in this repository, with the exact
-       package versions needed by the extension (PyTorch + CUDA + nnU-Net v2).
-    4. Runs a GPU self-test and prints a clear pass/fail summary, along
-       with the exact folder path to paste into the extension's
-       "vs_seg env directory" field.
-
-  Nothing outside this environment is modified: no system-wide PATH
-  changes, no admin rights, no other Python installation is touched.
+  One-click installer for the "vs_seg" conda environment.
+  Run via install_vs_seg.bat -- do not run this file directly.
 #>
 
-[CmdletBinding()]
-param(
-    # Where to install Miniforge if no conda installation is found.
-    [string]$MiniforgeInstallDir = (Join-Path $env:USERPROFILE "miniforge3")
-)
+# ── Never stop silently. Every error is caught explicitly below. ──────────
+$ErrorActionPreference = "Continue"
 
-$ErrorActionPreference = "Stop"
-$RepoRoot   = Split-Path -Parent $PSScriptRoot
-$EnvYmlPath = Join-Path $RepoRoot "environment.yml"
-$EnvName    = "vs_seg"
+$EnvName  = "vs_seg"
+$RepoRoot = Split-Path -Parent $PSScriptRoot        # …/3dSlicer_VS_Segmentation
+$EnvYml   = Join-Path $RepoRoot "environment.yml"
 
-# ---------------------------------------------------------------------------
-# Small helpers (ASCII-only output: avoids garbled text on non-UTF8 consoles,
-# the same class of issue that previously broke the extension's own logging)
-# ---------------------------------------------------------------------------
-
-function Write-Section($text) {
+# ── Helpers ──────────────────────────────────────────────────────────────
+function Banner($text) {
     Write-Host ""
-    Write-Host "==== $text ====" -ForegroundColor Cyan
+    Write-Host ("=" * 54) -ForegroundColor Cyan
+    Write-Host "  $text" -ForegroundColor Cyan
+    Write-Host ("=" * 54) -ForegroundColor Cyan
 }
-
-function Write-Info($text)  { Write-Host "  $text" -ForegroundColor Gray }
-function Write-Ok($text)    { Write-Host "  [OK] $text" -ForegroundColor Green }
-function Write-Warn($text)  { Write-Host "  [!]  $text" -ForegroundColor Yellow }
-
-function Write-FailAndExit($text) {
+function OK($msg)   { Write-Host "  [OK]  $msg" -ForegroundColor Green  }
+function WARN($msg) { Write-Host "  [!]   $msg" -ForegroundColor Yellow }
+function INFO($msg) { Write-Host "        $msg" -ForegroundColor Gray   }
+function FAIL($msg) {
     Write-Host ""
-    Write-Host "  [FAILED] $text" -ForegroundColor Red
+    Write-Host "  [FAIL] $msg" -ForegroundColor Red
     Write-Host ""
-    Write-Host "Setup did not complete. See the message above for details." -ForegroundColor Red
+    Write-Host "  Setup did not complete. Read the messages above," -ForegroundColor Red
+    Write-Host "  then close this window." -ForegroundColor Red
+    Write-Host ""
+    Read-Host "  Press Enter to exit"
     exit 1
 }
 
-# ---------------------------------------------------------------------------
-# Step 0: sanity checks
-# ---------------------------------------------------------------------------
+# ── Step 0: sanity checks ─────────────────────────────────────────────────
+Banner "Step 0 / 4  --  Checking system"
 
-Write-Section "Checking system"
-
-if (-not [Environment]::Is64BitOperatingSystem) {
-    Write-FailAndExit "This installer requires 64-bit Windows. Your system appears to be 32-bit."
+if (-not (Test-Path $EnvYml)) {
+    FAIL "environment.yml not found at:`n        $EnvYml`n`n  Make sure the 'scripts' folder is still inside the repo."
 }
-Write-Ok "64-bit Windows detected"
+OK "Found environment.yml"
 
-if (-not (Test-Path $EnvYmlPath)) {
-    Write-FailAndExit "Could not find environment.yml at: $EnvYmlPath`nMake sure this script is still inside the cloned repository's scripts\ folder."
-}
-Write-Ok "Found environment.yml"
+# ── Step 1: locate (or install) conda ────────────────────────────────────
+Banner "Step 1 / 4  --  Locating Python / conda"
 
-# ---------------------------------------------------------------------------
-# Step 1: find or install conda
-# ---------------------------------------------------------------------------
-
-Write-Section "Looking for an existing Python/conda installation"
-
-function Find-CondaRoot {
-    # 1) Already on PATH?
+function Find-CondaBat {
+    # 1. Already on PATH?
     $cmd = Get-Command conda -ErrorAction SilentlyContinue
     if ($cmd) {
-        # conda.exe/.bat typically lives in <root>\condabin or <root>\Scripts
-        $binDir = Split-Path -Parent $cmd.Source
-        $root   = Split-Path -Parent $binDir
-        if (Test-Path (Join-Path $root "condabin")) { return $root }
+        # cmd.Path is conda.bat or conda.exe
+        if ($cmd.Source -match '\\condabin\\') { return $cmd.Source }
+        # Reconstruct condabin path from any conda entry
+        $root = $cmd.Source
+        for ($i = 0; $i -lt 4; $i++) { $root = Split-Path $root -Parent }
+        $bat = Join-Path $root "condabin\conda.bat"
+        if (Test-Path $bat) { return $bat }
     }
-    # 2) Common install locations, user-level first (no admin required)
-    $candidates = @(
-        (Join-Path $env:USERPROFILE "miniforge3"),
-        (Join-Path $env:USERPROFILE "Miniconda3"),
-        (Join-Path $env:USERPROFILE "Anaconda3"),
+    # 2. Common install locations
+    $roots = @(
+        (Join-Path $env:USERPROFILE  "miniforge3"),
+        (Join-Path $env:USERPROFILE  "Miniforge3"),
         (Join-Path $env:LOCALAPPDATA "miniforge3"),
-        (Join-Path $env:ProgramData "miniforge3"),
-        (Join-Path $env:ProgramData "Anaconda3")
+        (Join-Path $env:USERPROFILE  "miniconda3"),
+        (Join-Path $env:USERPROFILE  "Miniconda3"),
+        (Join-Path $env:USERPROFILE  "anaconda3"),
+        (Join-Path $env:USERPROFILE  "Anaconda3"),
+        (Join-Path $env:ProgramData  "miniforge3"),
+        (Join-Path $env:ProgramData  "Miniconda3"),
+        (Join-Path $env:ProgramData  "Anaconda3")
     )
-    foreach ($c in $candidates) {
-        if (Test-Path (Join-Path $c "condabin\conda.bat")) { return $c }
+    foreach ($r in $roots) {
+        $bat = Join-Path $r "condabin\conda.bat"
+        if (Test-Path $bat) { return $bat }
     }
     return $null
 }
 
-$CondaRoot = Find-CondaRoot
+$CondaBat = Find-CondaBat
 
-if ($CondaRoot) {
-    Write-Ok "Found existing conda installation at: $CondaRoot"
-}
-else {
-    Write-Info "No conda installation found. Installing Miniforge3 (this only affects your user account)."
-    Write-Info "Install location: $MiniforgeInstallDir"
+if (-not $CondaBat) {
+    WARN "No conda / Miniforge found. Downloading Miniforge3 (one-time, ~100 MB installer)..."
+    $installDir = Join-Path $env:USERPROFILE "miniforge3"
+    $installer  = Join-Path $env:TEMP "Miniforge3-installer.exe"
 
-    $installerPath = Join-Path $env:TEMP "Miniforge3-installer.exe"
-    $downloadUrls = @(
+    $urls = @(
         "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Windows-x86_64.exe",
         "https://mirror.nju.edu.cn/github-release/conda-forge/miniforge/LatestRelease/Miniforge3-Windows-x86_64.exe"
     )
-
     $downloaded = $false
-    foreach ($url in $downloadUrls) {
-        Write-Info "Downloading from: $url"
+    foreach ($url in $urls) {
+        INFO "Trying: $url"
         try {
-            Invoke-WebRequest -Uri $url -OutFile $installerPath -UseBasicParsing
+            Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -TimeoutSec 120
             $downloaded = $true
+            OK "Download complete"
             break
-        }
-        catch {
-            Write-Warn "Download failed from this source, trying the next one if available..."
+        } catch {
+            WARN "Could not reach that source. Trying the next one..."
         }
     }
     if (-not $downloaded) {
-        Write-FailAndExit "Could not download the Miniforge installer from any source. Check your internet connection and try again, or install Miniforge manually from https://github.com/conda-forge/miniforge and re-run this script."
+        FAIL "Could not download Miniforge. Check your internet connection and try again.`n`n  Manual alternative:`n  Download from https://github.com/conda-forge/miniforge`n  and re-run this installer."
     }
-    Write-Ok "Download complete"
 
-    Write-Info "Installing (silent, current user only, no PATH changes)..."
-    $installArgs = @(
-        "/InstallationType=JustMe",
-        "/RegisterPython=0",
-        "/AddToPath=0",
-        "/S",
-        "/D=$MiniforgeInstallDir"
-    )
-    $proc = Start-Process -FilePath $installerPath -ArgumentList $installArgs -Wait -PassThru
-    Remove-Item $installerPath -ErrorAction SilentlyContinue
+    INFO "Installing Miniforge3 silently (this may take a minute)..."
+    $argList = "/InstallationType=JustMe /RegisterPython=0 /AddToPath=0 /S /D=$installDir"
+    $proc = Start-Process -FilePath $installer -ArgumentList $argList -Wait -PassThru
+    Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
-    if ($proc.ExitCode -ne 0 -or -not (Test-Path (Join-Path $MiniforgeInstallDir "condabin\conda.bat"))) {
-        Write-FailAndExit "Miniforge installation did not complete successfully (exit code $($proc.ExitCode))."
+    $CondaBat = Join-Path $installDir "condabin\conda.bat"
+    if ($proc.ExitCode -ne 0 -or -not (Test-Path $CondaBat)) {
+        FAIL "Miniforge installation failed (exit code $($proc.ExitCode)).`n  Try installing manually from https://github.com/conda-forge/miniforge"
     }
-    Write-Ok "Miniforge installed at: $MiniforgeInstallDir"
-    $CondaRoot = $MiniforgeInstallDir
-}
-
-$CondaBat = Join-Path $CondaRoot "condabin\conda.bat"
-
-# ---------------------------------------------------------------------------
-# Step 2: optional mirror for users with restricted access to
-# pypi.org / download.pytorch.org (e.g. mainland China networks)
-# ---------------------------------------------------------------------------
-
-Write-Section "Network configuration"
-
-Write-Host "  If pypi.org or download.pytorch.org are slow or unreachable from" -ForegroundColor Gray
-Write-Host "  your network, you can use a mirror instead." -ForegroundColor Gray
-$useMirror = Read-Host "  Use a package mirror? [y/N]"
-
-$EnvYmlToUse = $EnvYmlPath
-if ($useMirror -match '^[Yy]') {
-    $pipMirror  = Read-Host "  Pip index URL [default: https://mirrors.aliyun.com/pypi/simple/]"
-    if ([string]::IsNullOrWhiteSpace($pipMirror)) { $pipMirror = "https://mirrors.aliyun.com/pypi/simple/" }
-    $torchMirror = Read-Host "  PyTorch (cu128) wheel URL [default: https://mirrors.aliyun.com/pytorch-wheels/cu128/]"
-    if ([string]::IsNullOrWhiteSpace($torchMirror)) { $torchMirror = "https://mirrors.aliyun.com/pytorch-wheels/cu128/" }
-
-    $tmpEnvYml = Join-Path $env:TEMP "vs_seg_environment.mirror.yml"
-    $content = Get-Content $EnvYmlPath -Raw
-    $content = $content -replace '--extra-index-url https://download\.pytorch\.org/whl/cu128', "--index-url $pipMirror`n      - --find-links $torchMirror"
-    Set-Content -Path $tmpEnvYml -Value $content -Encoding UTF8
-    $EnvYmlToUse = $tmpEnvYml
-    Write-Ok "Using mirror configuration for this install"
+    OK "Miniforge installed at: $installDir"
 }
 else {
-    Write-Info "Using default package sources (pypi.org / download.pytorch.org)"
+    OK "Found conda at: $CondaBat"
 }
 
-# ---------------------------------------------------------------------------
-# Step 3: create or update the vs_seg environment
-# ---------------------------------------------------------------------------
+# Helper: run a conda command and return stdout
+function Invoke-Conda {
+    param([string[]]$Args)
+    $out = & cmd /c "`"$CondaBat`" $($Args -join ' ') 2>&1"
+    return $out
+}
 
-Write-Section "Setting up the '$EnvName' environment"
+# ── Step 2: network / mirror config ──────────────────────────────────────
+Banner "Step 2 / 4  --  Network configuration"
 
-function Get-CondaEnvPath($name) {
-    $json = & $CondaBat env list --json 2>$null | Out-String
-    if (-not $json) { return $null }
-    $data = $json | ConvertFrom-Json
-    foreach ($p in $data.envs) {
-        if ((Split-Path -Leaf $p) -eq $name) { return $p }
+Write-Host ""
+Write-Host "  If pypi.org or download.pytorch.org is slow or blocked" -ForegroundColor Gray
+Write-Host "  from your network (e.g. mainland China), type Y and" -ForegroundColor Gray
+Write-Host "  press Enter to use a mirror. Otherwise press Enter to skip." -ForegroundColor Gray
+Write-Host ""
+$mirrorChoice = Read-Host "  Use a mirror? [y/N]"
+
+$EnvYmlToUse = $EnvYml
+
+if ($mirrorChoice -match '^[Yy]') {
+    Write-Host ""
+    $pipMirror = Read-Host "  Pip index URL`n  [default: https://mirrors.aliyun.com/pypi/simple/]`n  > "
+    if ([string]::IsNullOrWhiteSpace($pipMirror)) {
+        $pipMirror = "https://mirrors.aliyun.com/pypi/simple/"
     }
-    return $null
+    $torchMirror = Read-Host "  PyTorch (cu128) wheel URL`n  [default: https://mirrors.aliyun.com/pytorch-wheels/cu128/]`n  > "
+    if ([string]::IsNullOrWhiteSpace($torchMirror)) {
+        $torchMirror = "https://mirrors.aliyun.com/pytorch-wheels/cu128/"
+    }
+
+    $tmpYml = Join-Path $env:TEMP "vs_seg_env_mirror.yml"
+    $content = Get-Content $EnvYml -Raw -Encoding UTF8
+    # Replace extra-index-url line with mirror config
+    $content = $content -replace '- --extra-index-url https://download\.pytorch\.org/whl/cu128',
+                                  "- --index-url $pipMirror`n      - --find-links $torchMirror"
+    Set-Content -Path $tmpYml -Value $content -Encoding UTF8
+    $EnvYmlToUse = $tmpYml
+    OK "Mirror configuration written to temp file"
+}
+else {
+    INFO "Using default sources (pypi.org / download.pytorch.org)"
 }
 
-$existingEnvPath = Get-CondaEnvPath $EnvName
-$action = "create"
+# ── Step 3: create / update the environment ───────────────────────────────
+Banner "Step 3 / 4  --  Creating the 'vs_seg' environment"
 
-if ($existingEnvPath) {
-    Write-Warn "An environment named '$EnvName' already exists at: $existingEnvPath"
-    Write-Host "  [R]ecreate from scratch  [U]pdate in place  [S]kip and just test it" -ForegroundColor Gray
-    $choice = Read-Host "  Choose R/U/S [default: U]"
-    switch -Regex ($choice) {
+# Check whether the environment already exists
+INFO "Checking for existing environments..."
+$envList = Invoke-Conda @("env", "list", "--json")
+$envExists = $false
+$existingPath = ""
+
+try {
+    # envList may contain warnings before the JSON -- grab the JSON part
+    $jsonPart = ($envList | Where-Object { $_ -match '^\s*\{' -or $_ -match '^\s*"' }) -join "`n"
+    if (-not $jsonPart) { $jsonPart = $envList -join "`n" }
+    $parsed = $jsonPart | ConvertFrom-Json
+    foreach ($p in $parsed.envs) {
+        if ((Split-Path $p -Leaf) -eq $EnvName) {
+            $envExists    = $true
+            $existingPath = $p
+        }
+    }
+} catch {
+    # JSON parse failed -- fall back to a simple string search
+    foreach ($line in $envList) {
+        if ($line -match "\\$EnvName\b" -or $line -match "/$EnvName\b") {
+            $envExists    = $true
+            $existingPath = ($line -split '\s+')[0]
+        }
+    }
+}
+
+$action = "create"
+if ($envExists) {
+    Write-Host ""
+    WARN "An environment named '$EnvName' already exists at:"
+    INFO "  $existingPath"
+    Write-Host ""
+    Write-Host "  Choose an option:" -ForegroundColor Gray
+    Write-Host "    [R] Remove and re-create from scratch" -ForegroundColor Gray
+    Write-Host "    [U] Update in place (default)" -ForegroundColor Gray
+    Write-Host "    [S] Skip environment changes, just test the GPU" -ForegroundColor Gray
+    Write-Host ""
+    $choice = Read-Host "  R / U / S  [default: U]"
+    switch -Regex ($choice.Trim()) {
         '^[Rr]' { $action = "recreate" }
-        '^[Ss]' { $action = "skip" }
-        default { $action = "update" }
+        '^[Ss]' { $action = "skip"     }
+        default { $action = "update"   }
     }
 }
 
 switch ($action) {
     "recreate" {
-        Write-Info "Removing existing environment..."
-        & $CondaBat env remove -n $EnvName -y | Out-Null
-        Write-Info "Creating environment from environment.yml (this can take several minutes)..."
-        & $CondaBat env create -n $EnvName -f $EnvYmlToUse
-        if ($LASTEXITCODE -ne 0) { Write-FailAndExit "Environment creation failed. See the output above for details." }
+        INFO "Removing existing environment..."
+        Invoke-Conda @("env", "remove", "-n", $EnvName, "-y") | Out-Null
+        INFO "Creating environment (downloading packages, ~4 GB -- please be patient)..."
+        Invoke-Conda @("env", "create", "-n", $EnvName, "-f", "`"$EnvYmlToUse`"")
+        if ($LASTEXITCODE -ne 0) { FAIL "Environment creation failed. See above." }
+        OK "Environment created"
     }
     "update" {
-        if ($existingEnvPath) {
-            Write-Info "Updating existing environment (this can take several minutes)..."
-            & $CondaBat env update -n $EnvName -f $EnvYmlToUse --prune
+        if ($envExists) {
+            INFO "Updating environment (downloading any new packages)..."
+            Invoke-Conda @("env", "update", "-n", $EnvName, "-f", "`"$EnvYmlToUse`"", "--prune")
+        } else {
+            INFO "Creating environment (downloading packages, ~4 GB -- please be patient)..."
+            Invoke-Conda @("env", "create", "-n", $EnvName, "-f", "`"$EnvYmlToUse`"")
         }
-        else {
-            Write-Info "Creating environment from environment.yml (this can take several minutes)..."
-            & $CondaBat env create -n $EnvName -f $EnvYmlToUse
+        if ($LASTEXITCODE -ne 0) { FAIL "Environment setup failed. See above." }
+        OK "Environment ready"
+    }
+    "skip" { INFO "Skipping environment setup." }
+}
+
+if ($EnvYmlToUse -ne $EnvYml) {
+    Remove-Item $EnvYmlToUse -Force -ErrorAction SilentlyContinue
+}
+
+# Re-locate the environment path (may have just been created)
+$EnvPath = $existingPath
+if ($action -ne "skip") {
+    $envList2 = Invoke-Conda @("env", "list", "--json")
+    try {
+        $jsonPart2 = ($envList2 | Where-Object { $_ -match '^\s*[\{\[]' }) -join "`n"
+        if (-not $jsonPart2) { $jsonPart2 = $envList2 -join "`n" }
+        $parsed2 = $jsonPart2 | ConvertFrom-Json
+        foreach ($p in $parsed2.envs) {
+            if ((Split-Path $p -Leaf) -eq $EnvName) { $EnvPath = $p }
         }
-        if ($LASTEXITCODE -ne 0) { Write-FailAndExit "Environment setup failed. See the output above for details." }
+    } catch {
+        foreach ($line in $envList2) {
+            if ($line -match "\\$EnvName\b" -or $line -match "/$EnvName\b") {
+                $EnvPath = ($line -split '\s+')[0]
+            }
+        }
     }
-    "skip" {
-        Write-Info "Skipping environment creation/update as requested."
-    }
 }
 
-if ($EnvYmlToUse -ne $EnvYmlPath) {
-    Remove-Item $EnvYmlToUse -ErrorAction SilentlyContinue
+if (-not $EnvPath -or -not (Test-Path $EnvPath)) {
+    FAIL "Could not locate the '$EnvName' environment after setup."
 }
 
-$EnvPath = Get-CondaEnvPath $EnvName
-if (-not $EnvPath) {
-    Write-FailAndExit "Could not locate the '$EnvName' environment after setup. Something went wrong."
-}
-Write-Ok "Environment ready at: $EnvPath"
+# ── Step 4: GPU self-test ─────────────────────────────────────────────────
+Banner "Step 4 / 4  --  GPU self-test"
 
-# ---------------------------------------------------------------------------
-# Step 4: GPU self-test
-# ---------------------------------------------------------------------------
-
-Write-Section "Testing GPU access"
-
-$envPython = Join-Path $EnvPath "python.exe"
-if (-not (Test-Path $envPython)) {
-    Write-FailAndExit "Could not find python.exe inside the environment at: $EnvPath"
-}
-
-$testScript = @'
-import torch
-if torch.cuda.is_available():
-    name = torch.cuda.get_device_name(0)
-    x = torch.rand(3, 3, device="cuda")
-    _ = (x @ x).sum().item()
-    print("GPU_OK|" + torch.__version__ + "|" + name)
-else:
-    print("GPU_MISSING|" + torch.__version__)
-'@
-$testScriptPath = Join-Path $env:TEMP "vs_seg_gpu_test.py"
-Set-Content -Path $testScriptPath -Value $testScript -Encoding UTF8
-
-$result = & $envPython $testScriptPath 2>&1
-Remove-Item $testScriptPath -ErrorAction SilentlyContinue
-
-if ($result -match '^GPU_OK\|([^\|]+)\|(.+)$') {
-    Write-Ok "PyTorch $($Matches[1]) detected GPU: $($Matches[2])"
-}
-elseif ($result -match '^GPU_MISSING\|(.+)$') {
-    Write-Warn "PyTorch $($Matches[1]) installed, but no CUDA GPU was detected."
-    Write-Warn "The extension will not run without a CUDA-capable NVIDIA GPU."
-    Write-Warn "See the 'Minimum hardware requirements' section of the README."
+$pythonExe = Join-Path $EnvPath "python.exe"
+if (-not (Test-Path $pythonExe)) {
+    WARN "python.exe not found at: $pythonExe"
+    WARN "The environment may be incomplete. Try re-running and choosing [R] to recreate."
 }
 else {
-    Write-Warn "Could not run the GPU self-test. Raw output:"
-    Write-Host "  $result" -ForegroundColor Gray
+    $gpuScript = Join-Path $env:TEMP "vs_seg_gpu_test.py"
+    Set-Content -Path $gpuScript -Encoding UTF8 -Value @'
+import sys, torch
+try:
+    if torch.cuda.is_available():
+        name = torch.cuda.get_device_name(0)
+        x = torch.rand(4, 4, device="cuda")
+        _ = (x @ x).sum().item()
+        print("GPU_OK|" + torch.__version__ + "|" + name)
+    else:
+        print("GPU_NONE|" + torch.__version__)
+except Exception as e:
+    print("GPU_ERR|" + str(e))
+'@
+    $result = & $pythonExe $gpuScript 2>&1
+    Remove-Item $gpuScript -Force -ErrorAction SilentlyContinue
+
+    if ($result -match "GPU_OK\|([^\|]+)\|(.+)") {
+        OK "PyTorch $($Matches[1])"
+        OK "GPU detected: $($Matches[2])"
+    }
+    elseif ($result -match "GPU_NONE\|(.+)") {
+        WARN "PyTorch $($Matches[1]) is installed, but NO CUDA GPU was found."
+        WARN "Inference requires an NVIDIA GPU with >= 8 GB VRAM."
+        WARN "Check that the NVIDIA driver is installed and that the GPU is recognised"
+        WARN "in Device Manager."
+    }
+    elseif ($result -match "GPU_ERR\|(.+)") {
+        WARN "GPU test raised an exception: $($Matches[1])"
+    }
+    else {
+        WARN "GPU test produced unexpected output:"
+        foreach ($line in $result) { INFO "  $line" }
+    }
 }
 
-# ---------------------------------------------------------------------------
-# Done
-# ---------------------------------------------------------------------------
+# ── Summary ───────────────────────────────────────────────────────────────
+Banner "Setup complete"
 
-Write-Section "Setup complete"
 Write-Host ""
-Write-Host "  Next steps in 3D Slicer:" -ForegroundColor White
-Write-Host "  1. Open 3D Slicer, then Edit > Application Settings > Modules." -ForegroundColor White
-Write-Host "  2. Under 'Additional module paths', add:" -ForegroundColor White
-Write-Host "       $RepoRoot\VSSegmentation" -ForegroundColor White
-Write-Host "  3. Restart Slicer, then open the 'VS Segmentation' module." -ForegroundColor White
-Write-Host "  4. In the 'vs_seg env directory' field, paste this exact path:" -ForegroundColor White
+Write-Host "  Copy the path below into the 'vs_seg env directory'" -ForegroundColor White
+Write-Host "  field in the VS Segmentation extension panel in Slicer:" -ForegroundColor White
 Write-Host ""
-Write-Host "       $EnvPath" -ForegroundColor Green
+Write-Host "      $EnvPath" -ForegroundColor Green
 Write-Host ""
-Write-Host "  (The 'nnUNet_results directory' field is auto-detected if the" -ForegroundColor White
-Write-Host "   model weights were downloaded into the models\ folder.)" -ForegroundColor White
+Write-Host "  Next steps:" -ForegroundColor White
+Write-Host "    1. Open 3D Slicer" -ForegroundColor White
+Write-Host "    2. Edit > Application Settings > Modules" -ForegroundColor White
+Write-Host "    3. Additional module paths > Add >" -ForegroundColor White
+Write-Host "         $RepoRoot\VSSegmentation" -ForegroundColor White
+Write-Host "    4. Restart Slicer, then open 'VS Segmentation'" -ForegroundColor White
 Write-Host ""
+Read-Host "  Press Enter to close this window"
