@@ -22,16 +22,23 @@ function FAIL($m) {
 }
 
 # Run a conda command with live streaming output.
-# Uses & cmd.exe /c  so child stdout/stderr go directly to this window
-# (Start-Process -NoNewWindow can buffer output on some Windows configs).
+# Write the conda command into a temp .bat file and call it directly.
+# This is the only reliable way to get conda's live progress bar
+# (tqdm / \r-based rewriting) to render in the console window --
+# calling conda through PowerShell's & or Start-Process pipelines
+# swallows the carriage-return progress updates.
 function Run-Conda([string[]]$CArgs) {
     $escaped = $CArgs | ForEach-Object {
         if ($_ -match '\s') { "`"$_`"" } else { $_ }
     }
-    $line = $escaped -join " "
+    $line   = $escaped -join " "
     DBG "Running: conda $line"
-    & cmd.exe /c "`"$script:CondaBat`" $line"
+    $tmpBat = Join-Path $env:TEMP "run_conda_$([System.IO.Path]::GetRandomFileName()).bat"
+    "@echo off`r`ncall `"$script:CondaBat`" $line`r`nexit /b %ERRORLEVEL%" |
+        Set-Content -Path $tmpBat -Encoding ASCII
+    & cmd.exe /c $tmpBat
     $rc = $LASTEXITCODE
+    Remove-Item $tmpBat -Force -ErrorAction SilentlyContinue
     DBG "  -> exit code: $rc"
     return $rc
 }
