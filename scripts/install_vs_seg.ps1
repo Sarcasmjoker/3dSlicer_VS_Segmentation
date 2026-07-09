@@ -112,14 +112,21 @@ OK "Using conda: $($script:CondaBat)"
 # --------------- Step 2: mirror ---------------
 Banner "Step 2 / 4  --  Network / mirror"
 Write-Host ""
-Write-Host "  Type Y if pypi.org / download.pytorch.org is slow or blocked" -ForegroundColor Gray
-Write-Host "  from your network (e.g. mainland China). Otherwise press Enter." -ForegroundColor Gray
+Write-Host "  +---------------------------------------------------------+" -ForegroundColor Yellow
+Write-Host "  |  ACTION REQUIRED: Please answer the question below.    |" -ForegroundColor Yellow
+Write-Host "  |                                                         |" -ForegroundColor Yellow
+Write-Host "  |  If you are in mainland China or pypi.org /            |" -ForegroundColor Yellow
+Write-Host "  |  download.pytorch.org are slow, type  Y  then Enter.   |" -ForegroundColor Yellow
+Write-Host "  |  Otherwise just press  Enter  to use the default.      |" -ForegroundColor Yellow
+Write-Host "  +---------------------------------------------------------+" -ForegroundColor Yellow
 Write-Host ""
-$mir = Read-Host "  Use a mirror? [y/N]"
+$mir = Read-Host "  >>> Use a package mirror? [y/N]"
 $EnvYmlToUse = $EnvYml
 if ($mir -match "^[Yy]") {
-    $pipM   = Read-Host "  Pip index URL   (Enter = Aliyun default)"
-    $torchM = Read-Host "  PyTorch cu128   (Enter = Aliyun default)"
+    Write-Host ""
+    Write-Host "  (Just press Enter to accept the Aliyun defaults below)" -ForegroundColor Gray
+    $pipM   = Read-Host "  >>> Pip index URL   (Enter = Aliyun)"
+    $torchM = Read-Host "  >>> PyTorch cu128   (Enter = Aliyun)"
     if ([string]::IsNullOrWhiteSpace($pipM))   { $pipM   = "https://mirrors.aliyun.com/pypi/simple/" }
     if ([string]::IsNullOrWhiteSpace($torchM)) { $torchM = "https://mirrors.aliyun.com/pytorch-wheels/cu128/" }
     $tmpYml  = Join-Path $env:TEMP "vs_seg_mirror.yml"
@@ -128,8 +135,11 @@ if ($mir -match "^[Yy]") {
                                  ("- --index-url " + $pipM + "`n      - --find-links " + $torchM)
     Set-Content -Path $tmpYml -Value $content -Encoding UTF8
     $EnvYmlToUse = $tmpYml
-    OK "Mirror config: $tmpYml"
-} else { INFO "Using default sources (pypi.org / download.pytorch.org)" }
+    OK "Mirror config written"
+} else {
+    OK "Using default sources (pypi.org / download.pytorch.org)"
+}
+Write-Host "  Step 2 complete. Proceeding to Step 3..." -ForegroundColor Green
 
 # --------------- Step 3: env setup ---------------
 Banner "Step 3 / 4  --  Setting up the '$EnvName' environment"
@@ -179,11 +189,18 @@ if ($existingEnvPath) {
 
 if ($doCreate) {
     DBG "Running conda env create..."
-    INFO "Creating '$EnvName' from environment.yml..."
-    INFO "(Downloads ~4 GB of packages -- normal, please wait)"
+    Write-Host ""
+    Write-Host "  +----------------------------------------------------------+" -ForegroundColor Yellow
+    Write-Host "  |  DOWNLOADING AND INSTALLING PACKAGES                    |" -ForegroundColor Yellow
+    Write-Host "  |  This step downloads ~4 GB and may take 10-30 minutes.  |" -ForegroundColor Yellow
+    Write-Host "  |  The window is NOT frozen -- conda progress will appear  |" -ForegroundColor Yellow
+    Write-Host "  |  below as packages are downloaded and installed.        |" -ForegroundColor Yellow
+    Write-Host "  |  Please DO NOT close this window.                       |" -ForegroundColor Yellow
+    Write-Host "  +----------------------------------------------------------+" -ForegroundColor Yellow
+    Write-Host ""
     $rc = Run-Conda @("env", "create", "-n", $EnvName, "-f", $EnvYmlToUse)
     if ($rc -ne 0) { FAIL "Environment creation failed (rc=$rc). See output above." }
-    OK "Environment created"
+    OK "Environment created successfully"
 }
 
 if ($EnvYmlToUse -ne $EnvYml) {
