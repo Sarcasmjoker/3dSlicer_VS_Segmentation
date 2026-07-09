@@ -215,6 +215,13 @@ if ($envExists) {
 Write-Host ""
 
 switch ($action) {
+    "create" {
+        # env does not exist yet -- create from scratch
+        INFO "Creating '$EnvName' from environment.yml (~4 GB download, please wait)..."
+        $rc = Run-Conda @("env", "create", "-n", $EnvName, "-f", "`"$EnvYmlToUse`"")
+        if ($rc -ne 0) { FAIL "Environment creation failed (exit code $rc).`n  See the output above for details." }
+        OK "Environment created"
+    }
     "recreate" {
         INFO "Removing existing '$EnvName' environment..."
         Run-Conda @("env", "remove", "-n", $EnvName, "-y") | Out-Null
@@ -224,15 +231,10 @@ switch ($action) {
         OK "Environment created"
     }
     "update" {
-        if ($envExists) {
-            INFO "Updating packages in '$EnvName' environment..."
-            $rc = Run-Conda @("env", "update", "-n", $EnvName, "-f", "`"$EnvYmlToUse`"", "--prune")
-        } else {
-            INFO "Creating '$EnvName' from environment.yml (~4 GB download, please wait)..."
-            $rc = Run-Conda @("env", "create", "-n", $EnvName, "-f", "`"$EnvYmlToUse`"")
-        }
-        if ($rc -ne 0) { FAIL "Environment setup failed (exit code $rc).`n  See the output above for details." }
-        OK "Environment ready"
+        INFO "Updating packages in '$EnvName' environment..."
+        $rc = Run-Conda @("env", "update", "-n", $EnvName, "-f", "`"$EnvYmlToUse`"", "--prune")
+        if ($rc -ne 0) { FAIL "Environment update failed (exit code $rc).`n  See the output above for details." }
+        OK "Environment updated"
     }
     "skip" { INFO "Skipping environment creation/update." }
 }
