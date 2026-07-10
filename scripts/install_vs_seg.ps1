@@ -36,7 +36,7 @@ function Run-Conda([string[]]$CArgs) {
     $tmpBat = Join-Path $env:TEMP "run_conda_$([System.IO.Path]::GetRandomFileName()).bat"
     "@echo off`r`ncall `"$script:CondaBat`" $line`r`nexit /b %ERRORLEVEL%" |
         Set-Content -Path $tmpBat -Encoding ASCII
-    & cmd.exe /c $tmpBat
+    & cmd.exe /c $tmpBat | Out-Host
     $rc = $LASTEXITCODE
     Remove-Item $tmpBat -Force -ErrorAction SilentlyContinue
     DBG "  -> exit code: $rc"
