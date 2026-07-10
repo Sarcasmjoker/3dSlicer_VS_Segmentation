@@ -1,0 +1,13 @@
+{
+    "channel_names": {
+        "0": "ceT1"
+    },
+    "labels": {
+        "background": 0,
+        "VS": 1
+    },
+    "numTraining": 215,
+    "file_ending": ".nii.gz",
+    "name": "Dataset502_VSmix",
+    "description": "VS tumor seg; CrossMoDA ceT1 (154) + manually-labeled new nrrd (67, cystic/varied spacing)."
+}

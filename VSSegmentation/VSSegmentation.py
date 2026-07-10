@@ -126,13 +126,7 @@ class VSSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.inputVolumeSelector.setMRMLScene(slicer.mrmlScene)
         self.logic = VSSegmentationLogic()
 
-        # Model combo
-        self.ui.modelSelector.clear()
-        self.ui.modelSelector.addItem(
-            "Dataset502 — 1000 ep  (recommended: CrossMoDA + cystic)", "502")
-        self.ui.modelSelector.addItem(
-            "Dataset501 — 250 ep  (CrossMoDA ceT1 only)", "501")
-        self.ui.modelSelector.setCurrentIndex(0)
+        # Model is fixed to Dataset502 (1000 ep); no selector needed.
 
         # Default paths: prefer the models/ directory bundled in this repo,
         # then fall back to the original dev-machine path.
@@ -251,11 +245,11 @@ class VSSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if not self._queue:
             return
 
-        conda_env     = self.ui.condaEnvEdit.text.strip()
+        conda_env      = self.ui.condaEnvEdit.text.strip()
         nnunet_results = self.ui.resultsPathEdit.text.strip()
-        dataset_id    = self.ui.modelSelector.currentData
-        postprocess   = self.ui.postprocessCheckBox.checked
-        auto_load     = self.ui.autoLoadCheckBox.checked
+        dataset_id     = "502"   # fixed: Dataset502, 1000 ep
+        postprocess    = self.ui.postprocessCheckBox.checked
+        auto_load      = self.ui.autoLoadCheckBox.checked
 
         try:
             self.logic.configure(
