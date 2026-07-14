@@ -21,26 +21,184 @@ function FAIL($m) {
     Read-Host "  Press Enter to exit"; exit 1
 }
 
-# Run a conda command with live streaming output.
-# Write the conda command into a temp .bat file and call it directly.
-# This is the only reliable way to get conda's live progress bar
-# (tqdm / \r-based rewriting) to render in the console window --
-# calling conda through PowerShell's & or Start-Process pipelines
-# swallows the carriage-return progress updates.
-function Run-Conda([string[]]$CArgs) {
-    $escaped = $CArgs | ForEach-Object {
-        if ($_ -match '\s') { "`"$_`"" } else { $_ }
+# Quote one argument using the Windows CommandLineToArgvW rules.
+function Quote-NativeArgument([AllowEmptyString()][string]$Value) {
+    if ($null -eq $Value) { $Value = "" }
+    if ($Value.IndexOf([char]0) -ge 0) {
+        throw "A native-process argument contains a NUL character."
     }
-    $line   = $escaped -join " "
-    DBG "Running: conda $line"
-    $tmpBat = Join-Path $env:TEMP "run_conda_$([System.IO.Path]::GetRandomFileName()).bat"
-    "@echo off`r`ncall `"$script:CondaBat`" $line`r`nexit /b %ERRORLEVEL%" |
-        Set-Content -Path $tmpBat -Encoding ASCII
-    & cmd.exe /c $tmpBat | Out-Host
-    $rc = $LASTEXITCODE
-    Remove-Item $tmpBat -Force -ErrorAction SilentlyContinue
+
+    $result = New-Object System.Text.StringBuilder
+    [void]$result.Append('"')
+    $slashes = 0
+    foreach ($ch in $Value.ToCharArray()) {
+        if ($ch -eq '\') {
+            $slashes++
+            continue
+        }
+        if ($ch -eq '"') {
+            if ($slashes -gt 0) { [void]$result.Append(('\' * ($slashes * 2))) }
+            [void]$result.Append('\"')
+        } else {
+            if ($slashes -gt 0) { [void]$result.Append(('\' * $slashes)) }
+            [void]$result.Append($ch)
+        }
+        $slashes = 0
+    }
+    if ($slashes -gt 0) { [void]$result.Append(('\' * ($slashes * 2))) }
+    [void]$result.Append('"')
+    return $result.ToString()
+}
+
+# Run conda.exe with its stdout/stderr attached directly to this console.
+# Do not add a PowerShell pipeline here: conda uses carriage returns to redraw
+# download bars and spinners, and a pipeline converts that stream into lines.
+function Run-Conda([string[]]$CArgs) {
+    if (-not $script:CondaExe -or -not (Test-Path -LiteralPath $script:CondaExe)) {
+        WARN "conda.exe was not found at: $($script:CondaExe)"
+        return 1
+    }
+
+    $argumentLine = (($CArgs | ForEach-Object { Quote-NativeArgument $_ }) -join " ")
+    DBG "Running: conda $argumentLine"
+
+    $process = $null
+    $rc = 1
+    try {
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $script:CondaExe
+        $startInfo.Arguments = $argumentLine
+        $startInfo.WorkingDirectory = $RepoRoot
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $false
+        $startInfo.RedirectStandardOutput = $false
+        $startInfo.RedirectStandardError = $false
+
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+        if ($null -eq $process) { throw "conda.exe did not start." }
+        $process.WaitForExit()
+        $rc = $process.ExitCode
+    } catch {
+        WARN "Could not run conda: $($_.Exception.Message)"
+    } finally {
+        if ($process) { $process.Dispose() }
+    }
+
     DBG "  -> exit code: $rc"
-    return $rc
+    return [int]$rc
+}
+
+function Format-ByteSize([double]$Bytes) {
+    if ($Bytes -ge 1GB) { return ("{0:N1} GB" -f ($Bytes / 1GB)) }
+    if ($Bytes -ge 1MB) { return ("{0:N1} MB" -f ($Bytes / 1MB)) }
+    if ($Bytes -ge 1KB) { return ("{0:N1} KB" -f ($Bytes / 1KB)) }
+    return ("{0:N0} B" -f $Bytes)
+}
+
+# Invoke-WebRequest progress is host/version dependent. Stream the response
+# ourselves so first-time Miniforge downloads always show bytes, speed, and
+# percentage when the server supplies Content-Length.
+function Download-FileWithProgress(
+    [string]$Url,
+    [string]$Destination,
+    [int]$TimeoutSec = 180
+) {
+    $request = $null
+    $response = $null
+    $inputStream = $null
+    $outputStream = $null
+    $lineVisible = $false
+    $completed = $false
+
+    try {
+        $request = [System.Net.HttpWebRequest]([System.Net.WebRequest]::Create($Url))
+        $request.Method = "GET"
+        $request.AllowAutoRedirect = $true
+        $request.Timeout = $TimeoutSec * 1000
+        $request.ReadWriteTimeout = $TimeoutSec * 1000
+        $request.UserAgent = "VS-Segmentation-Installer/1.0"
+
+        $response = [System.Net.HttpWebResponse]$request.GetResponse()
+        $total = [long]$response.ContentLength
+        $inputStream = $response.GetResponseStream()
+        $outputStream = [System.IO.File]::Open(
+            $Destination,
+            [System.IO.FileMode]::Create,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+
+        $buffer = New-Object byte[] (64KB)
+        $downloaded = [long]0
+        $timer = [System.Diagnostics.Stopwatch]::StartNew()
+        $lastDraw = [System.Diagnostics.Stopwatch]::StartNew()
+
+        while (($read = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $outputStream.Write($buffer, 0, $read)
+            $downloaded += $read
+
+            if ($lastDraw.ElapsedMilliseconds -ge 200 -or ($total -gt 0 -and $downloaded -ge $total)) {
+                $seconds = [Math]::Max($timer.Elapsed.TotalSeconds, 0.001)
+                $speed = Format-ByteSize ($downloaded / $seconds)
+                if ($total -gt 0) {
+                    $percent = [Math]::Min(100, (100.0 * $downloaded / $total))
+                    $status = "  Downloading: {0,6:N1}%  {1} / {2}  {3}/s" -f `
+                        $percent, (Format-ByteSize $downloaded), (Format-ByteSize $total), $speed
+                } else {
+                    $status = "  Downloading: {0}  {1}/s" -f (Format-ByteSize $downloaded), $speed
+                }
+                Write-Host ("`r{0,-88}" -f $status) -NoNewline -ForegroundColor Cyan
+                $lineVisible = $true
+                $lastDraw.Restart()
+            }
+        }
+
+        if ($total -gt 0 -and $downloaded -ne $total) {
+            throw "Download ended early ($downloaded of $total bytes)."
+        }
+        if ($downloaded -le 0) { throw "The server returned an empty file." }
+
+        if (-not $lineVisible) {
+            Write-Host ("  Downloaded {0}" -f (Format-ByteSize $downloaded)) -ForegroundColor Cyan
+        } else {
+            Write-Host ""
+            $lineVisible = $false
+        }
+        $completed = $true
+    } finally {
+        if ($outputStream) { $outputStream.Dispose() }
+        if ($inputStream)  { $inputStream.Dispose() }
+        if ($response)     { $response.Dispose() }
+        if ($lineVisible)  { Write-Host "" }
+        if (-not $completed) {
+            Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Run-MiniforgeInstaller([string]$Installer, [string]$InstallDir) {
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $Installer
+    # NSIS requires /D to be the final argument and consumes the rest of the line.
+    $startInfo.Arguments = "/InstallationType=JustMe /RegisterPython=0 /AddToPath=0 /S /D=$InstallDir"
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+
+    $process = $null
+    try {
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+        if ($null -eq $process) { throw "The Miniforge installer did not start." }
+        $timer = [System.Diagnostics.Stopwatch]::StartNew()
+        while (-not $process.WaitForExit(500)) {
+            $elapsed = "{0:00}:{1:00}" -f [Math]::Floor($timer.Elapsed.TotalMinutes), $timer.Elapsed.Seconds
+            $status = "  Installing Miniforge3... elapsed $elapsed"
+            Write-Host ("`r{0,-72}" -f $status) -NoNewline -ForegroundColor Cyan
+        }
+        Write-Host ("`r{0,-72}" -f "  Miniforge3 installer finished.") -ForegroundColor Cyan
+        return [int]$process.ExitCode
+    } finally {
+        if ($process) { $process.Dispose() }
+    }
 }
 
 # --------------- Step 0: sanity ---------------
@@ -102,19 +260,35 @@ if (-not $script:CondaBat) {
     foreach ($url in $urls) {
         INFO "Trying: $url"
         try {
-            Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -TimeoutSec 180
+            # GitHub requires TLS 1.2 on older Windows/.NET installations.
+            [System.Net.ServicePointManager]::SecurityProtocol =
+                [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+            Download-FileWithProgress -Url $url -Destination $installer -TimeoutSec 180
             $ok = $true; OK "Download complete"; break
-        } catch { WARN "Failed, trying next..." }
+        } catch { WARN "Download failed: $($_.Exception.Message)" }
     }
     if (-not $ok) { FAIL "Could not download Miniforge3. Check internet connection." }
-    INFO "Installing Miniforge3 silently..."
-    & $installer /InstallationType=JustMe /RegisterPython=0 /AddToPath=0 /S /D=$installDir
+    INFO "Installing Miniforge3 silently (elapsed time will update below)..."
+    try {
+        $installRc = Run-MiniforgeInstaller -Installer $installer -InstallDir $installDir
+    } catch {
+        Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+        FAIL "Could not start the Miniforge3 installer: $($_.Exception.Message)"
+    }
     Remove-Item $installer -Force -ErrorAction SilentlyContinue
+    if ($installRc -ne 0) { FAIL "Miniforge3 installer failed (rc=$installRc)." }
     $script:CondaBat = Join-Path $installDir "condabin\conda.bat"
     if (-not (Test-Path $script:CondaBat)) { FAIL "Miniforge3 install failed." }
     OK "Miniforge3 installed at: $installDir"
 }
 OK "Using conda: $($script:CondaBat)"
+$condaBatDir = Split-Path $script:CondaBat -Parent
+$condaRoot = Split-Path $condaBatDir -Parent
+$script:CondaExe = Join-Path $condaRoot "Scripts\conda.exe"
+if (-not (Test-Path -LiteralPath $script:CondaExe)) {
+    FAIL "conda.exe not found at: $($script:CondaExe)"
+}
+DBG "Using conda executable: $($script:CondaExe)"
 
 # --------------- Step 2: mirror ---------------
 Banner "Step 2 / 4  --  Network / mirror"
@@ -153,8 +327,6 @@ Banner "Step 3 / 4  --  Setting up the '$EnvName' environment"
 
 # Detect env by checking python.exe in the two most common locations.
 # We do NOT rely on JSON output from conda (it has ANSI/warning noise).
-$condaBatDir  = Split-Path $script:CondaBat -Parent        # .../condabin
-$condaRoot    = Split-Path $condaBatDir -Parent            # .../miniforge3
 $candidatePaths = @(
     (Join-Path $env:USERPROFILE  ".conda\envs\$EnvName"),
     (Join-Path $env:LOCALAPPDATA ".conda\envs\$EnvName"),

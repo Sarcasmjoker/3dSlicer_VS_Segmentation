@@ -2,10 +2,11 @@
 :: VS Segmentation -- One-click environment installer
 :: Double-click this file.  No terminal or programming experience needed.
 ::
-:: Uses "cmd /k" so the window stays open on ANY exit (success or error).
-:: The user can read the results and close the window manually.
+:: The final pause keeps the window open on any exit (success or error).
+:: The user can read the result before closing the window.
 
 title VS Segmentation -- Environment Setup
+set "RC=1"
 
 echo.
 echo  =====================================================
@@ -60,15 +61,23 @@ if not exist "%PS1%" (
 ::   -NoProfile               : skip user profile (faster, no interference)
 ::   -File "..."              : run the PS1 as a script file
 ::
-:: IMPORTANT: we do NOT use "cmd /k" here because the PS1 already
-:: prompts the user.  The outer "cmd /k" at the CALL instruction
-:: below (see last line) keeps this window alive after PS1 finishes.
+:: The PS1 streams native conda output directly into this console so its
+:: download bars and spinners remain visible.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%"
+set "RC=%ERRORLEVEL%"
 
 :END
 echo.
-echo  -------------------------------------------------------
-echo   Done.  You can now close this window.
-echo  -------------------------------------------------------
+if "%RC%"=="0" (
+    echo  -------------------------------------------------------
+    echo   Setup completed successfully.
+    echo  -------------------------------------------------------
+) else (
+    echo  -------------------------------------------------------
+    echo   Setup failed with exit code %RC%.
+    echo   Review the messages above before closing this window.
+    echo  -------------------------------------------------------
+)
 echo.
 pause
+exit /b %RC%
