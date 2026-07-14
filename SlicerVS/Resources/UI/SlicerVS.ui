@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>VSSegmentation</class>
- <widget class="qMRMLWidget" name="VSSegmentation">
+ <class>SlicerVS</class>
+ <widget class="qMRMLWidget" name="SlicerVS">
   <property name="geometry">
    <rect><x>0</x><y>0</y><width>500</width><height>720</height></rect>
   </property>
-  <property name="windowTitle"><string>VS Segmentation</string></property>
+  <property name="windowTitle"><string>SlicerVS</string></property>
   <layout class="QVBoxLayout" name="mainLayout" stretch="0,0,0,0,0,1,0">
 
    <!-- ── Input queue ─────────────────────────────────────────────── -->

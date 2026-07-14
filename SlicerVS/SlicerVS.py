@@ -15,13 +15,13 @@ from slicer.util import VTKObservationMixin
 # Module metadata
 # ---------------------------------------------------------------------------
 
-class VSSegmentation(ScriptedLoadableModule):
+class SlicerVS(ScriptedLoadableModule):
     def __init__(self, parent):
         super().__init__(parent)
-        self.parent.title = "VS Segmentation"
+        self.parent.title = "SlicerVS"
         self.parent.categories = ["Segmentation"]
         self.parent.dependencies = []
-        self.parent.contributors = ["VS Segmentation Project"]
+        self.parent.contributors = ["SlicerVS Project"]
         self.parent.helpText = """
 Automatic vestibular schwannoma (VS) segmentation from contrast-enhanced T1 (ceT1) MRI.
 
@@ -107,7 +107,7 @@ _STATUS_COLORS = {
     "cancelled": "#e07800",
 }
 
-class VSSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
+class SlicerVSWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def __init__(self, parent=None):
         super().__init__(parent)
         VTKObservationMixin.__init__(self)
@@ -119,12 +119,12 @@ class VSSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # ------------------------------------------------------------------
     def setup(self):
         super().setup()
-        uiWidget = slicer.util.loadUI(self.resourcePath("UI/VSSegmentation.ui"))
+        uiWidget = slicer.util.loadUI(self.resourcePath("UI/SlicerVS.ui"))
         self.layout.addWidget(uiWidget)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
         uiWidget.setMRMLScene(slicer.mrmlScene)
         self.ui.inputVolumeSelector.setMRMLScene(slicer.mrmlScene)
-        self.logic = VSSegmentationLogic()
+        self.logic = SlicerVSLogic()
 
         # Model is fixed to Dataset502 (1000 ep); no selector needed.
 
@@ -349,7 +349,7 @@ class VSSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 # Logic
 # ---------------------------------------------------------------------------
 
-class VSSegmentationLogic(ScriptedLoadableModuleLogic):
+class SlicerVSLogic(ScriptedLoadableModuleLogic):
     """
     Core inference logic.  Call configure() once, then processItem() per case.
     Subprocess handle is stored in _activeProc so the worker can cancel it.
@@ -517,7 +517,8 @@ class VSSegmentationLogic(ScriptedLoadableModuleLogic):
 
     def _findNormalizeScript(self):
         # 1) Explicit override always wins.
-        override = os.environ.get("VSSEG_SCRIPT_PATH")
+        override = (os.environ.get("SLICERVS_SCRIPT_PATH")
+                    or os.environ.get("VSSEG_SCRIPT_PATH"))
         if override and os.path.isfile(override):
             return override
 
@@ -544,7 +545,8 @@ class VSSegmentationLogic(ScriptedLoadableModuleLogic):
         raise FileNotFoundError(
             "normalize_and_predict.py not found (checked the bundled "
             "Resources/Scripts copy and legacy paths).\n"
-            "Set the VSSEG_SCRIPT_PATH environment variable to its location.")
+            "Set the SLICERVS_SCRIPT_PATH environment variable to its location."
+            " (VSSEG_SCRIPT_PATH is also accepted for compatibility.)")
 
     def _importSegmentation(self, seg_file, ref_node):
         label_node = slicer.util.loadLabelVolume(seg_file)

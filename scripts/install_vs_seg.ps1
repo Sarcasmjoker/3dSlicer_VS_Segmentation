@@ -116,7 +116,7 @@ function Download-FileWithProgress(
         $request.AllowAutoRedirect = $true
         $request.Timeout = $TimeoutSec * 1000
         $request.ReadWriteTimeout = $TimeoutSec * 1000
-        $request.UserAgent = "VS-Segmentation-Installer/1.0"
+        $request.UserAgent = "SlicerVS-Installer/1.0"
 
         $response = [System.Net.HttpWebResponse]$request.GetResponse()
         $total = [long]$response.ContentLength
@@ -451,7 +451,7 @@ Write-Host ""; Write-Host "      $EnvPath" -ForegroundColor Green; Write-Host ""
 Write-Host "  Next steps in 3D Slicer:" -ForegroundColor White
 Write-Host "    1. Edit > Application Settings > Modules" -ForegroundColor White
 Write-Host "    2. Additional module paths > Add > select:" -ForegroundColor White
-Write-Host "         $RepoRoot\VSSegmentation" -ForegroundColor White
-Write-Host "    3. Click OK, restart Slicer, open VS Segmentation." -ForegroundColor White
+Write-Host "         $RepoRoot\SlicerVS" -ForegroundColor White
+Write-Host "    3. Click OK, restart Slicer, open SlicerVS." -ForegroundColor White
 Write-Host ""
 Read-Host "  Press Enter to close"

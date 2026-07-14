@@ -1,4 +1,4 @@
-# VS Segmentation — a 3D Slicer extension for vestibular schwannoma segmentation
+# SlicerVS — a 3D Slicer extension for vestibular schwannoma segmentation
 
 Automatic segmentation of **vestibular schwannoma (VS)** on contrast-enhanced
 T1 (ceT1) MRI, built on [nnU-Net v2](https://github.com/MIC-DKFZ/nnUNet) and
@@ -44,7 +44,7 @@ compute-intensive. Please read this section before installing.
 | **GPU** | NVIDIA CUDA-capable GPU, **≥ 8 GB VRAM recommended** | The 5-fold ensemble loads a model and 3D patches per fold; less VRAM risks `CUDA out of memory`. Developed and validated on an RTX 5060 Ti (16 GB). CPU-only inference is *theoretically* possible (nnU-Net supports it) but **has not been tested** with this extension and will be substantially slower — plan for many times longer per case. Treat CPU inference as unverified, not a supported configuration. |
 | **RAM** | ≥ 16 GB recommended | Slicer, the vs_seg subprocess, and image I/O run concurrently. Inference is far lighter than training, but headroom avoids memory pressure on typical Windows systems. |
 | **Disk** | ~6-8 GB for the conda environment (PyTorch + CUDA runtime) + ~235 MB per fold checkpoint per model (5 folds/model) | |
-| **OS** | Verified on **Windows** | The subprocess launcher assumes Windows-style paths (`python.exe`, a `Scripts\` directory). It has **not** been tested on macOS/Linux; adapting `_findPythonExe()` in `VSSegmentation.py` would be required there. |
+| **OS** | Verified on **Windows** | The subprocess launcher assumes Windows-style paths (`python.exe`, a `Scripts\` directory). It has **not** been tested on macOS/Linux; adapting `_findPythonExe()` in `SlicerVS.py` would be required there. |
 
 ---
 
@@ -175,11 +175,11 @@ with `3d_fullres`, 5-fold cross-validation, and point the
 5. **Edit → Application Settings → Modules**.
 6. Under **Additional module paths**, click **Add** and select:
    ```
-   <repo>\VSSegmentation
+   <repo>\SlicerVS
    ```
 7. Click **OK**; Slicer will prompt for a restart.
-8. After restarting, search for `VS Segmentation` in the module finder, or
-   find it under **Segmentation → VS Segmentation**.
+8. After restarting, search for `SlicerVS` in the module finder, or
+   find it under **Segmentation → SlicerVS**.
 9. In the **"vs_seg env directory"** field, paste the path printed by the
    installer at the end of step 3.
 
@@ -241,7 +241,7 @@ vs_seg Python (torch + nnunetv2)
 Slicer Python (load segmentation nrrd -> vtkMRMLSegmentationNode)
 ```
 
-The bundled script, `VSSegmentation/Resources/Scripts/normalize_and_predict.py`,
+The bundled script, `SlicerVS/Resources/Scripts/normalize_and_predict.py`,
 is self-contained — it only depends on `numpy` and `SimpleITK`, both
 present in the `vs_seg` environment.
 
@@ -256,7 +256,7 @@ cancellation kills the active subprocess.
 |---|---|---|
 | `python.exe not found in: ...` | Wrong conda environment path | Verify the `vs_seg env directory` field points at the environment root (containing `python.exe`) |
 | `Inference failed (rc=1)` | GPU/environment issue | Expand the "Log" panel to see the subprocess's stderr tail |
-| `normalize_and_predict.py not found` | Extension files were only partially copied, or `VSSEG_SCRIPT_PATH` points somewhere invalid | Re-check the repo layout; `Resources/Scripts/normalize_and_predict.py` should exist next to `VSSegmentation.py` |
+| `normalize_and_predict.py not found` | Extension files were only partially copied, or `SLICERVS_SCRIPT_PATH` points somewhere invalid | Re-check the repo layout; `Resources/Scripts/normalize_and_predict.py` should exist next to `SlicerVS.py` |
 | `'utf-8' codec can't decode byte ...` | Fixed in this version — the subprocess environment now forces `PYTHONIOENCODING=utf-8` regardless of the Windows console code page | Update to the latest version if you still see this |
 | Log full of `Possible incompatible factory load` / `Error ImageIO factory did not return an ImageIOBase: MRMLIDImageIO` | Harmless noise from earlier versions: Slicer's `ITK_AUTOLOAD_PATH` environment variable was leaking into the `vs_seg` subprocess, causing its own SimpleITK/ITK build to attempt (and fail) to load Slicer's ITK factory plugins | Fixed in this version — the subprocess environment now strips `ITK_AUTOLOAD_PATH`/`QT_PLUGIN_PATH`/`SLICER_HOME` before launching |
 | Empty segmentation mask | Input isn't a ceT1 sequence, or intensities are unusual | Confirm the input is a contrast-enhanced T1 series |

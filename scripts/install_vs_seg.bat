@@ -1,20 +1,20 @@
 @echo off
-:: VS Segmentation -- One-click environment installer
+:: SlicerVS -- One-click environment installer
 :: Double-click this file.  No terminal or programming experience needed.
 ::
 :: The final pause keeps the window open on any exit (success or error).
 :: The user can read the result before closing the window.
 
-title VS Segmentation -- Environment Setup
+title SlicerVS -- Environment Setup
 set "RC=1"
 
 echo.
 echo  =====================================================
-echo   VS Segmentation  --  Environment Installer
+echo   SlicerVS  --  Environment Installer
 echo  =====================================================
 echo.
 echo  This window will install the Python environment needed
-echo  to run the VS Segmentation plugin in 3D Slicer.
+echo  to run the SlicerVS plugin in 3D Slicer.
 echo.
 echo  What will happen:
 echo    - If Miniforge (free Python) is not installed, it will

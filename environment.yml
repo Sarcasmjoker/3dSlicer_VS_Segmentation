@@ -1,5 +1,5 @@
 name: vs_seg
-# Conda environment for VS Segmentation inference (nnU-Net v2 + PyTorch with CUDA).
+# Conda environment for SlicerVS inference (nnU-Net v2 + PyTorch with CUDA).
 #
 # Usage:
 #   conda env create -f environment.yml

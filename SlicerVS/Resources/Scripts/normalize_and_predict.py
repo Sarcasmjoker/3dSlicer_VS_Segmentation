@@ -12,7 +12,7 @@ Inference: 5-fold ensemble, 3d_fullres.
 Segmentation results are written back to the input folder as
 <original stem><suffix><ext>.
 
-This script is bundled with the SlicerVSSegmentation extension
+This script is bundled with the SlicerVS extension
 (Resources/Scripts/normalize_and_predict.py) so the extension is
 self-contained after `git clone` -- it has no dependency on any other
 file from the original training repository.
