@@ -6,12 +6,15 @@ integrated into [3D Slicer](https://www.slicer.org/) as a scripted module.
 
 - **Normalization**: 0.5th-99.9th percentile intensity clipping (matches the
   preprocessing used to train the model)
-- **Inference**: nnU-Net v2, 5-fold ensemble, `3d_fullres`
+- **Inference**: nnU-Net v2 `3d_fullres`, with fast single-fold and accurate
+  5-fold modes
 - **Model**: Dataset502 (1000 epochs) — trained on
   [CrossMoDA](https://crossmoda-challenge.ml/) ceT1 data plus additional
   cystic-tumor / varied-spacing cases (215 cases total)
-- Batch queue with per-item progress, cancellation, and optional auto-load
-  of results into the Slicer scene
+- Automatic CUDA/ROCm/MPS/DirectML selection with a reliable CPU fallback and
+  low-VRAM handling
+- Batch queue with per-item progress, process-tree cancellation, and optional
+  auto-load of results into the Slicer scene
 
 **Pretrained weights** (Dataset502, 1000 ep) are available on the
 [Releases page](https://github.com/Sarcasmjoker/3dSlicer_VS_Segmentation/releases)
@@ -23,6 +26,7 @@ for installation instructions.
 ## Contents
 
 - [Minimum hardware requirements](#minimum-hardware-requirements)
+- [Inference backends and quality modes](#inference-backends-and-quality-modes)
 - [Quick start (one-click installer)](#quick-start-one-click-installer)
 - [Manual environment setup](#manual-environment-setup)
 - [Model weights](#model-weights)
@@ -36,15 +40,54 @@ for installation instructions.
 
 ## Minimum hardware requirements
 
-Inference runs nnU-Net's 5-fold `3d_fullres` ensemble, which is
-compute-intensive. Please read this section before installing.
+Accurate inference runs nnU-Net's 5-fold `3d_fullres` ensemble and is
+compute-intensive. Fast mode reduces that workload substantially.
 
 | Resource | Minimum | Notes |
 |---|---|---|
-| **GPU** | NVIDIA CUDA-capable GPU, **≥ 8 GB VRAM recommended** | The 5-fold ensemble loads a model and 3D patches per fold; less VRAM risks `CUDA out of memory`. Developed and validated on an RTX 5060 Ti (16 GB). CPU-only inference is *theoretically* possible (nnU-Net supports it) but **has not been tested** with this extension and will be substantially slower — plan for many times longer per case. Treat CPU inference as unverified, not a supported configuration. |
+| **GPU** | Optional; **10 GB VRAM recommended** for accurate mode | NVIDIA CUDA and Linux AMD ROCm use nnU-Net's native GPU path. DirectML is experimental on Windows AMD/Intel adapters. CUDA/ROCm devices below 10 GB automatically keep sliding-window accumulators on CPU. |
 | **RAM** | ≥ 16 GB recommended | Slicer, the vs_seg subprocess, and image I/O run concurrently. Inference is far lighter than training, but headroom avoids memory pressure on typical Windows systems. |
-| **Disk** | ~6-8 GB for the conda environment (PyTorch + CUDA runtime) + ~235 MB per fold checkpoint per model (5 folds/model) | |
-| **OS** | Verified on **Windows** | The subprocess launcher assumes Windows-style paths (`python.exe`, a `Scripts\` directory). It has **not** been tested on macOS/Linux; adapting `_findPythonExe()` in `SlicerVS.py` would be required there. |
+| **CPU** | Any modern x86-64 CPU; 16 GB RAM recommended | CPU inference completed the normalization, real Dataset502 prediction, and export smoke pipeline. It is substantially slower than GPU inference, especially in accurate mode. |
+| **Disk** | ~3-8 GB for the environment, depending on backend, plus ~235 MB per fold checkpoint | Accurate mode requires all five checkpoints; fast mode requires fold 2. |
+| **OS** | Windows 11 recommended | The one-click installer targets Windows. The subprocess launcher also supports conventional Linux/macOS conda layouts, but those platforms require manual environment setup. |
+
+## Inference backends and quality modes
+
+### Compute backends
+
+| UI choice | Behavior |
+|---|---|
+| **Auto** | Uses CUDA (NVIDIA or AMD ROCm) first, then Apple MPS, installed DirectML, then CPU. The selected backend is printed in the log. |
+| **GPU (NVIDIA CUDA / AMD ROCm)** | Requires a compatible GPU-enabled PyTorch environment and fails clearly if the GPU is unavailable. |
+| **CPU** | Works on all supported PCs, including systems with unsupported AMD/Intel integrated graphics. |
+| **Apple GPU (MPS)** | Uses PyTorch MPS on supported Apple Silicon environments; not available on Windows. |
+| **DirectML (experimental)** | Tries the nnU-Net Python API on a DirectML-compatible Windows adapter. Any unsupported operator automatically retries the complete case on CPU. |
+
+ROCm exposes supported AMD devices through PyTorch's `torch.cuda` API, so
+nnU-Net receives `-device cuda` for both NVIDIA and AMD GPUs. Native AMD ROCm
+on Linux is supported through `environment-amd-linux.yml`. AMD's current native
+Windows ROCm 7.2.1 wheel requires PyTorch 2.9.1, while nnU-Net 2.8.1 explicitly
+excludes PyTorch 2.9.x; SlicerVS therefore does not publish that conflicting
+combination as a stable environment. Windows AMD/Intel users can use the
+experimental DirectML environment or the reliable CPU environment. Intel XPU
+is not accepted by the nnU-Net 2.8.1 CLI. See Microsoft's
+[PyTorch with DirectML guide](https://learn.microsoft.com/windows/ai/directml/pytorch-windows)
+for the underlying Windows backend.
+
+### Quality modes
+
+| Mode | nnU-Net settings | Intended use |
+|---|---|---|
+| **Fast** | fold 2, `step_size=0.75`, TTA disabled | Interactive review, CPU/iGPU fallback, or time-sensitive batches |
+| **Accurate** | folds 0-4, `step_size=0.5`, mirror TTA enabled | Final results when runtime is less important |
+
+These are speed/accuracy presets, not INT8/FP16 quantization modes. They use
+nnU-Net's validated inference path; on CUDA/ROCm, nnU-Net applies its standard
+automatic mixed precision internally. Post-processing remains independently
+controllable in both modes. Fold 2 is the provisional single-fold choice based
+on the recorded cross-validation scores; because each fold used a different
+validation subset, fast-mode accuracy should still be confirmed on the target
+site's held-out data.
 
 ---
 
@@ -55,8 +98,9 @@ compute-intensive. Please read this section before installing.
 
 **Prerequisites (required before running the installer):**
 
-1. A 64-bit Windows PC with an NVIDIA GPU (≥ 8 GB VRAM recommended — see
-   [Minimum hardware requirements](#minimum-hardware-requirements))
+1. A 64-bit Windows PC. A compatible NVIDIA/AMD GPU is optional; every system
+   can use CPU inference (see
+   [Inference backends and quality modes](#inference-backends-and-quality-modes)).
 2. [3D Slicer](https://download.slicer.org/) ≥ 5.0 installed
 3. An internet connection for the first-time package download (~4-6 GB)
 
@@ -74,9 +118,10 @@ compute-intensive. Please read this section before installing.
      [Miniforge](https://github.com/conda-forge/miniforge) (a free, minimal
      Python distribution) into your user folder — **no administrator rights
      needed** and your existing Python/software is not affected.
-   - Create a dedicated `vs_seg` Python environment with all required packages
-     (PyTorch with CUDA, nnU-Net v2, SimpleITK, etc.).
-   - Run a GPU self-test and print a clear **PASS / FAIL** result.
+   - Ask you to choose NVIDIA CUDA, experimental DirectML, or portable CPU.
+   - Create a dedicated `vs_seg` Python environment with the matching PyTorch,
+     nnU-Net v2, SimpleITK, and NumPy packages.
+   - Run a compute self-test and report the GPU backend or CPU fallback.
    - Print the exact folder path to paste into the extension's
      **"vs_seg env directory"** field in Slicer.
 4. **Register the extension in Slicer** (see
@@ -90,20 +135,53 @@ compute-intensive. Please read this section before installing.
 
 ## Manual environment setup
 
-If you prefer to set up the environment manually (e.g. on macOS/Linux, or
-if you already have conda installed), run:
+Choose exactly one environment file for the target backend:
 
 ```bash
+# NVIDIA CUDA 12.8
 conda env create -f environment.yml
-conda activate vs_seg
-python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+
+# Portable CPU (AMD/Intel/NVIDIA systems, no supported GPU required)
+conda env create -f environment-cpu.yml
+
+# Experimental DirectML on Windows AMD/Intel/NVIDIA adapters
+conda env create -f environment-directml.yml
+
+# Native AMD ROCm on Linux
+conda env create -f environment-amd-linux.yml
+
+# Apple Silicon (MPS with CPU fallback)
+conda env create -f environment-macos.yml
 ```
 
-Expected output: `True` followed by your GPU's name. If
-`torch.cuda.is_available()` returns `False`, the most common cause is a
-dependency silently replacing the CUDA-enabled torch with a CPU-only build.
-See the comments in `environment.yml` and reinstall the pinned CUDA wheels
-together with `nnunetv2` in a single `pip` command.
+Then verify the environment:
+
+```bash
+conda activate vs_seg
+python -c "import torch; print(torch.__version__); print('GPU:', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU fallback')"
+```
+
+For Apple MPS use:
+
+```bash
+python -c "import torch; print(torch.backends.mps.is_available())"
+```
+
+For DirectML use:
+
+```bash
+python -c "import torch, torch_directml; d=torch_directml.device(); print(d); print((torch.tensor([1]).to(d)+torch.tensor([2]).to(d)).to('cpu').item())"
+```
+
+For Linux ROCm, confirm that ROCm 6.4 matches the installed driver and GPU; if
+not, create an equivalent environment with the PyTorch build recommended by
+AMD. The plugin identifies ROCm automatically. The DirectML environment uses
+Microsoft's documented PyTorch 2.3.1 ceiling and is deliberately isolated from
+the CUDA/ROCm environments.
+
+CUDA, ROCm, DirectML, macOS, and CPU PyTorch builds should not be mixed. When
+changing backend, remove/re-create `vs_seg` or use a separate conda environment
+and point the plugin to that environment directory.
 
 ## Model weights
 
@@ -198,7 +276,13 @@ with `3d_fullres`, 5-fold cross-validation, and point the
    - **Add files…**: select one or more `.nrrd` / `.nii.gz` / `.nii` /
      `.mha` / `.mhd` files from disk
    - **Add folder…**: add every supported image file found in a folder
-2. **Choose a model** — Dataset502 (1000 ep) is the only bundled model.
+2. **Choose inference settings**:
+   - `Inference quality`: Fast for responsiveness or Accurate for the full
+     five-fold/TTA pipeline
+   - `Compute device`: Auto is recommended; choose CPU to force the portable
+     path, GPU to require CUDA/ROCm, or DirectML for the experimental path
+   - `Post-processing`: enabled by default and now honored by the inference
+     wrapper
 3. **Set the environment paths** (first run only — auto-filled if loading
    from the cloned repo with weights already placed in `models/`):
    - `vs_seg env directory`: the conda environment root, e.g.
@@ -208,8 +292,8 @@ with `3d_fullres`, 5-fold cross-validation, and point the
 4. **Click "▶ Run segmentation"**. Each queued item is processed in turn;
    the queue table shows live status per item (Pending → Running → Done /
    Error / Cancelled), with a scrollable log panel below for details.
-5. **Click "■ Cancel"** at any time to stop after the current item
-   finishes — remaining queued items are marked Cancelled without running.
+5. **Click "■ Cancel"** to terminate the active wrapper and its nnU-Net
+   child process; remaining queued items are marked Cancelled without running.
 6. For file/folder inputs, the resulting segmentation is always written
    back next to the original image as `<name>_seg.nrrd`, regardless of the
    "Auto-load results into Slicer scene" setting. Uncheck that option for
@@ -230,23 +314,25 @@ separate `vs_seg` conda environment for the actual inference, then imports
 the result back into the scene:
 
 ```
-Slicer Python (UI, QThread worker)
-      │  subprocess.Popen(...)
+Slicer main thread (export MRML input to a temporary file)
+      │
+Slicer QThread worker (subprocess.Popen)
       ▼
 vs_seg Python (torch + nnunetv2)
   normalize_and_predict.py:
-    normalize -> nnUNetv2_predict (5-fold ensemble) -> postprocess -> write <name>_seg.nrrd
+    normalize -> select backend/profile -> nnU-Net CLI/Python API -> optional postprocess -> write <name>_seg.nrrd
       │
       ▼
-Slicer Python (load segmentation nrrd -> vtkMRMLSegmentationNode)
+Slicer main thread (load segmentation nrrd -> vtkMRMLSegmentationNode)
 ```
 
 The bundled script, `SlicerVS/Resources/Scripts/normalize_and_predict.py`,
-is self-contained — it only depends on `numpy` and `SimpleITK`, both
-present in the `vs_seg` environment.
+is self-contained and uses the PyTorch, nnU-Net, NumPy, and SimpleITK packages
+from the selected `vs_seg` environment.
 
-Inference runs in a background `QThread` so the Slicer UI stays responsive;
-cancellation kills the active subprocess.
+File/subprocess work runs in a background `QThread` so the Slicer UI stays
+responsive. All MRML/VTK scene operations remain on Slicer's main thread, and
+cancellation terminates the active process tree.
 
 ---
 
@@ -254,13 +340,16 @@ cancellation kills the active subprocess.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `python.exe not found in: ...` | Wrong conda environment path | Verify the `vs_seg env directory` field points at the environment root (containing `python.exe`) |
-| `Inference failed (rc=1)` | GPU/environment issue | Expand the "Log" panel to see the subprocess's stderr tail |
+| `Python executable not found in: ...` | Wrong conda environment path | Verify the `vs_seg env directory` points at the environment root (containing `python.exe` on Windows or `python` on Linux/macOS) |
+| `CUDA/ROCm was requested ... unavailable` | The selected environment does not support the installed GPU | Use Auto/CPU, or re-create `vs_seg` from the matching NVIDIA CUDA or Linux AMD ROCm environment file |
+| AMD/Intel adapter is present but Auto selects CPU | DirectML is not installed/available, or ROCm is unavailable | Use the experimental DirectML environment on Windows, a compatible ROCm environment on Linux, or the reliable CPU path |
+| DirectML fails during prediction | One or more nnU-Net operators are unsupported by the adapter/runtime | No action is required: the wrapper logs the error and retries the complete case on CPU |
+| `Inference failed (rc=1)` | Model, input, or compute-environment issue | Expand the Log panel and inspect the final subprocess lines |
 | `normalize_and_predict.py not found` | Extension files were only partially copied, or `SLICERVS_SCRIPT_PATH` points somewhere invalid | Re-check the repo layout; `Resources/Scripts/normalize_and_predict.py` should exist next to `SlicerVS.py` |
 | `'utf-8' codec can't decode byte ...` | Fixed in this version — the subprocess environment now forces `PYTHONIOENCODING=utf-8` regardless of the Windows console code page | Update to the latest version if you still see this |
 | Log full of `Possible incompatible factory load` / `Error ImageIO factory did not return an ImageIOBase: MRMLIDImageIO` | Harmless noise from earlier versions: Slicer's `ITK_AUTOLOAD_PATH` environment variable was leaking into the `vs_seg` subprocess, causing its own SimpleITK/ITK build to attempt (and fail) to load Slicer's ITK factory plugins | Fixed in this version — the subprocess environment now strips `ITK_AUTOLOAD_PATH`/`QT_PLUGIN_PATH`/`SLICER_HOME` before launching |
 | Empty segmentation mask | Input isn't a ceT1 sequence, or intensities are unusual | Confirm the input is a contrast-enhanced T1 series |
-| `CUDA out of memory` | Insufficient VRAM for the 5-fold ensemble | See [Minimum hardware requirements](#minimum-hardware-requirements); no workaround is provided by this extension today |
+| `CUDA out of memory` / `HIP out of memory` | The case exceeds available GPU memory even after automatic low-VRAM handling | Try Fast mode, force CPU, and close other GPU-heavy applications |
 
 ---
 

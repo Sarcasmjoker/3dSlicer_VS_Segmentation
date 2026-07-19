@@ -5,7 +5,12 @@
 $ErrorActionPreference = "Continue"
 $EnvName  = "vs_seg"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$EnvYml   = Join-Path $RepoRoot "environment.yml"
+$NvidiaEnvYml = Join-Path $RepoRoot "environment.yml"
+$CpuEnvYml    = Join-Path $RepoRoot "environment-cpu.yml"
+$DirectMLEnvYml = Join-Path $RepoRoot "environment-directml.yml"
+$EnvYml       = $NvidiaEnvYml
+$Backend      = "nvidia"
+$BackendLabel = "NVIDIA CUDA"
 
 function Banner($t) {
     Write-Host ""; Write-Host ("=" * 56) -ForegroundColor Cyan
@@ -205,11 +210,41 @@ function Run-MiniforgeInstaller([string]$Installer, [string]$InstallDir) {
 Banner "Step 0 / 4  --  Checking system"
 DBG "PSScriptRoot : $PSScriptRoot"
 DBG "RepoRoot     : $RepoRoot"
-DBG "EnvYml       : $EnvYml"
-if (-not (Test-Path $EnvYml)) {
-    FAIL "environment.yml not found at: $EnvYml`n  Make sure the scripts folder is still inside the repo."
+foreach ($requiredYml in @($NvidiaEnvYml, $CpuEnvYml, $DirectMLEnvYml)) {
+    if (-not (Test-Path -LiteralPath $requiredYml)) {
+        FAIL "Environment file not found: $requiredYml`n  Make sure the scripts folder is still inside the repo."
+    }
 }
-OK "Found environment.yml"
+OK "Found NVIDIA, CPU, and DirectML environment files"
+
+# Select a backend before creating/updating the environment. CUDA, DirectML,
+# and CPU wheels use different PyTorch versions/builds.
+$videoNames = @()
+try {
+    $videoNames = @(Get-CimInstance Win32_VideoController -ErrorAction Stop |
+        Select-Object -ExpandProperty Name)
+} catch { WARN "Could not inspect video adapters; showing all backend choices." }
+$hasNvidia = [bool]($videoNames | Where-Object { $_ -match "NVIDIA|GeForce|Quadro|RTX|GTX" })
+$hasAmd    = [bool]($videoNames | Where-Object { $_ -match "AMD|Radeon" })
+if ($videoNames.Count -gt 0) { INFO ("Detected video adapter(s): " + ($videoNames -join "; ")) }
+Write-Host ""; Write-Host "  Choose the inference environment:" -ForegroundColor White
+Write-Host "    [N] NVIDIA CUDA (fastest on NVIDIA GPUs)" -ForegroundColor Gray
+Write-Host "    [D] DirectML experimental (AMD/Intel/NVIDIA, including many iGPUs)" -ForegroundColor Gray
+Write-Host "    [C] CPU (works on every machine; slowest)" -ForegroundColor Gray
+$defaultBackend = if ($hasNvidia) { "N" } else { "C" }
+if ($hasAmd -and -not $hasNvidia) {
+    INFO "AMD GPU detected. DirectML can be tried experimentally; CPU is the reliable default."
+}
+$choice = Read-Host ("  >>> Backend [N/D/C, default " + $defaultBackend + "]")
+if ([string]::IsNullOrWhiteSpace($choice)) { $choice = $defaultBackend }
+switch -Regex ($choice.Trim()) {
+    "^[Dd]" { $EnvYml = $DirectMLEnvYml; $Backend = "dml"; $BackendLabel = "DirectML (experimental)"; break }
+    "^[Cc]" { $EnvYml = $CpuEnvYml; $Backend = "cpu"; $BackendLabel = "CPU"; break }
+    "^[Nn]" { $EnvYml = $NvidiaEnvYml; $Backend = "nvidia"; $BackendLabel = "NVIDIA CUDA"; break }
+    default  { WARN "Unknown choice '$choice'; using $defaultBackend."; if ($defaultBackend -eq "C") { $EnvYml=$CpuEnvYml; $Backend="cpu"; $BackendLabel="CPU" } }
+}
+OK "Selected backend: $BackendLabel"
+DBG "EnvYml       : $EnvYml"
 
 # --------------- Step 1: locate conda ---------------
 Banner "Step 1 / 4  --  Locating Python / conda"
@@ -296,8 +331,7 @@ Write-Host ""
 Write-Host "  +---------------------------------------------------------+" -ForegroundColor Yellow
 Write-Host "  |  ACTION REQUIRED: Please answer the question below.    |" -ForegroundColor Yellow
 Write-Host "  |                                                         |" -ForegroundColor Yellow
-Write-Host "  |  If you are in mainland China or pypi.org /            |" -ForegroundColor Yellow
-Write-Host "  |  download.pytorch.org are slow, type  Y  then Enter.   |" -ForegroundColor Yellow
+Write-Host "  |  If package sources are slow, type Y then Enter.       |" -ForegroundColor Yellow
 Write-Host "  |  Otherwise just press  Enter  to use the default.      |" -ForegroundColor Yellow
 Write-Host "  +---------------------------------------------------------+" -ForegroundColor Yellow
 Write-Host ""
@@ -307,18 +341,33 @@ if ($mir -match "^[Yy]") {
     Write-Host ""
     Write-Host "  (Just press Enter to accept the Aliyun defaults below)" -ForegroundColor Gray
     $pipM   = Read-Host "  >>> Pip index URL   (Enter = Aliyun)"
-    $torchM = Read-Host "  >>> PyTorch cu128   (Enter = Aliyun)"
-    if ([string]::IsNullOrWhiteSpace($pipM))   { $pipM   = "https://mirrors.aliyun.com/pypi/simple/" }
-    if ([string]::IsNullOrWhiteSpace($torchM)) { $torchM = "https://mirrors.aliyun.com/pytorch-wheels/cu128/" }
+    if ([string]::IsNullOrWhiteSpace($pipM)) { $pipM = "https://mirrors.aliyun.com/pypi/simple/" }
     $tmpYml  = Join-Path $env:TEMP "vs_seg_mirror.yml"
     $content = Get-Content $EnvYml -Raw -Encoding UTF8
-    $content = $content -replace "- --extra-index-url https://download\.pytorch\.org/whl/cu128",
-                                 ("- --index-url " + $pipM + "`n      - --find-links " + $torchM)
+    if ($Backend -eq "dml") {
+        $content = $content.Replace(
+            "  - pip:",
+            ("  - pip:`n      - --index-url " + $pipM)
+        )
+    } else {
+        $torchFlavor = if ($Backend -eq "cpu") { "cpu" } else { "cu128" }
+        $torchM = Read-Host ("  >>> PyTorch " + $torchFlavor + " wheels (Enter = Aliyun)")
+        if ([string]::IsNullOrWhiteSpace($torchM)) {
+            $torchM = "https://mirrors.aliyun.com/pytorch-wheels/$torchFlavor/"
+        }
+        $officialTorch = "- --extra-index-url https://download.pytorch.org/whl/$torchFlavor"
+        $replacement = "- --index-url " + $pipM + "`n      - --find-links " + $torchM
+        $content = $content.Replace($officialTorch, $replacement)
+    }
     Set-Content -Path $tmpYml -Value $content -Encoding UTF8
     $EnvYmlToUse = $tmpYml
     OK "Mirror config written"
 } else {
-    OK "Using default sources (pypi.org / download.pytorch.org)"
+    if ($Backend -eq "dml") {
+        OK "Using default source (pypi.org)"
+    } else {
+        OK "Using default sources (pypi.org / download.pytorch.org)"
+    }
 }
 Write-Host "  Step 2 complete. Proceeding to Step 3..." -ForegroundColor Green
 
@@ -419,33 +468,81 @@ if (-not $EnvPath) {
 OK "Environment path: $EnvPath"
 $PythonExe = Join-Path $EnvPath "python.exe"
 
-# --------------- Step 4: GPU test ---------------
-Banner "Step 4 / 4  --  GPU self-test"
+# --------------- Step 4: compute test ---------------
+Banner "Step 4 / 4  --  Compute backend self-test"
 $gpu = Join-Path $env:TEMP "vs_gpu_test.py"
 Set-Content -Path $gpu -Encoding UTF8 -Value @"
 import torch
+selected = '$Backend'
 try:
-    if torch.cuda.is_available():
+    if selected == 'dml':
+        import torch_directml
+        device = torch_directml.device()
+        x = torch.rand(4, 4).to(device)
+        _ = (x @ x).sum().to('cpu').item()
+        print('DML_OK|' + torch.__version__)
+    elif torch.cuda.is_available():
         nm = torch.cuda.get_device_name(0)
         x  = torch.rand(4, 4, device='cuda')
         _  = (x @ x).sum().item()
-        print('GPU_OK|' + torch.__version__ + '|' + nm)
+        hip = getattr(torch.version, 'hip', None)
+        vendor = ('AMD ROCm ' + str(hip)) if hip else ('NVIDIA CUDA ' + str(torch.version.cuda))
+        print('GPU_OK|' + torch.__version__ + '|' + vendor + '|' + nm)
     else:
-        print('GPU_NONE|' + torch.__version__)
+        x = torch.rand(64, 64)
+        _ = (x @ x).sum().item()
+        print('CPU_OK|' + torch.__version__)
 except Exception as e:
-    print('GPU_ERR|' + str(e))
+    if selected == 'dml':
+        x = torch.rand(64, 64)
+        _ = (x @ x).sum().item()
+        print('DML_FAIL|' + torch.__version__ + '|' + str(e).replace('|', '/'))
+    else:
+        print('BACKEND_ERR|' + str(e))
 "@
 $res = (& $PythonExe $gpu 2>&1 | Out-String).Trim()
 Remove-Item $gpu -Force -ErrorAction SilentlyContinue
-DBG "GPU test raw: $res"
-if     ($res -match "GPU_OK\|([^\|]+)\|(.+)")  { OK "PyTorch $($Matches[1])"; OK "GPU: $($Matches[2])" }
-elseif ($res -match "GPU_NONE\|(.+)")           { WARN "No CUDA GPU (PyTorch $($Matches[1])). Extension needs NVIDIA GPU >= 8 GB VRAM." }
-elseif ($res -match "GPU_ERR\|(.+)")            { WARN "GPU test error: $($Matches[1])" }
-else                                            { WARN "Unexpected GPU output: $res" }
+DBG "Backend test raw: $res"
+$ActualBackendLabel = "Unknown"
+if ($res -match "GPU_OK\|([^\|]+)\|([^\|]+)\|(.+)") {
+    OK "PyTorch $($Matches[1])"
+    OK "GPU backend: $($Matches[2])"
+    OK "GPU: $($Matches[3])"
+    $ActualBackendLabel = $Matches[2]
+} elseif ($res -match "DML_OK\|(.+)") {
+    OK "PyTorch $($Matches[1])"
+    OK "DirectML tensor self-test passed."
+    WARN "DirectML nnU-Net support remains experimental; unsupported operators automatically fall back to CPU."
+    $ActualBackendLabel = "DirectML (experimental)"
+} elseif ($res -match "DML_FAIL\|([^\|]+)\|(.+)") {
+    OK "PyTorch $($Matches[1])"
+    WARN "DirectML self-test failed: $($Matches[2])"
+    OK "CPU fallback self-test passed."
+    $ActualBackendLabel = "CPU (DirectML unavailable)"
+} elseif ($res -match "CPU_OK\|(.+)") {
+    OK "PyTorch $($Matches[1])"
+    OK "CPU inference is available. Auto mode will use the CPU."
+    $ActualBackendLabel = "CPU"
+    if ($Backend -ne "cpu") {
+        WARN "$BackendLabel was selected but no compatible GPU was detected by PyTorch."
+    }
+} elseif ($res -match "BACKEND_ERR\|(.+)") {
+    WARN "Compute backend test error: $($Matches[1])"
+} else {
+    WARN "Unexpected backend output: $res"
+}
+$backendMatches = (($Backend -eq "nvidia" -and $ActualBackendLabel -match "NVIDIA CUDA") -or
+                   ($Backend -eq "dml" -and $ActualBackendLabel -match "DirectML") -or
+                   ($Backend -eq "cpu" -and $ActualBackendLabel -eq "CPU"))
+if (-not $backendMatches -and $ActualBackendLabel -ne "Unknown") {
+    WARN "Requested $BackendLabel, but the existing environment reports $ActualBackendLabel. Re-run and choose [R] to rebuild it."
+}
 
 # --------------- Summary ---------------
 Banner "Setup complete"
 Write-Host ""
+Write-Host "  Requested backend: $BackendLabel" -ForegroundColor White
+Write-Host "  Detected backend:  $ActualBackendLabel" -ForegroundColor White
 Write-Host "  Paste this into 'vs_seg env directory' in Slicer:" -ForegroundColor White
 Write-Host ""; Write-Host "      $EnvPath" -ForegroundColor Green; Write-Host ""
 Write-Host "  Next steps in 3D Slicer:" -ForegroundColor White

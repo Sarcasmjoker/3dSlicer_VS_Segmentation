@@ -22,7 +22,9 @@ echo      be downloaded and installed for your user account
 echo      (no administrator rights needed).
 echo    - A "vs_seg" environment will be created with all
 echo      required packages (PyTorch, nnU-Net v2, etc.).
-echo    - Your GPU will be tested at the end.
+echo    - You can choose NVIDIA CUDA, experimental DirectML
+echo      for many AMD/Intel GPUs, or portable CPU inference.
+echo    - The selected compute backend will be tested at the end.
 echo.
 echo  Expected time: 5-20 minutes (first run, downloads ~4 GB).
 echo  The window will NOT close automatically -- you can read

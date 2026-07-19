@@ -1,0 +1,13 @@
+name: vs_seg
+# Apple Silicon environment. PyTorch uses MPS when available and otherwise CPU.
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - torch==2.8.0
+      - torchvision==0.23.0
+      - nnunetv2==2.8.1
+      - SimpleITK
+      - numpy

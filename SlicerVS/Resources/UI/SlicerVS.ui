@@ -94,13 +94,56 @@
         <property name="styleSheet"><string>color: #4a9fd4; font-weight: bold;</string></property>
        </widget>
       </item>
-      <item row="1" column="0" colspan="2">
+      <item row="1" column="0">
+       <widget class="QLabel">
+        <property name="text"><string>Inference quality:</string></property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QComboBox" name="qualityComboBox">
+        <property name="currentIndex"><number>1</number></property>
+        <property name="toolTip"><string>Fast greatly reduces computation. Accurate uses the full ensemble and test-time augmentation.</string></property>
+        <item>
+         <property name="text"><string>Fast (1 fold, no TTA)</string></property>
+        </item>
+        <item>
+         <property name="text"><string>Accurate (5 folds + TTA)</string></property>
+        </item>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel">
+        <property name="text"><string>Compute device:</string></property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QComboBox" name="deviceComboBox">
+        <property name="currentIndex"><number>0</number></property>
+        <property name="toolTip"><string>Auto selects CUDA/ROCm, MPS, or installed DirectML and otherwise uses CPU.</string></property>
+        <item>
+         <property name="text"><string>Auto (GPU when available)</string></property>
+        </item>
+        <item>
+         <property name="text"><string>GPU (NVIDIA CUDA / AMD ROCm)</string></property>
+        </item>
+        <item>
+         <property name="text"><string>CPU</string></property>
+        </item>
+        <item>
+         <property name="text"><string>Apple GPU (MPS)</string></property>
+        </item>
+        <item>
+         <property name="text"><string>DirectML (experimental, with CPU fallback)</string></property>
+        </item>
+       </widget>
+      </item>
+      <item row="3" column="0" colspan="2">
        <widget class="QCheckBox" name="postprocessCheckBox">
         <property name="text"><string>Post-processing: keep largest connected region</string></property>
         <property name="checked"><bool>true</bool></property>
        </widget>
       </item>
-      <item row="2" column="0" colspan="2">
+      <item row="4" column="0" colspan="2">
        <widget class="QCheckBox" name="autoLoadCheckBox">
         <property name="text"><string>Auto-load results into Slicer scene</string></property>
         <property name="checked"><bool>true</bool></property>
@@ -164,7 +207,7 @@
       <widget class="QPushButton" name="cancelButton">
        <property name="text"><string>■  Cancel</string></property>
        <property name="enabled"><bool>false</bool></property>
-       <property name="toolTip"><string>Stop inference after the current image finishes</string></property>
+       <property name="toolTip"><string>Stop the active inference process and cancel remaining images</string></property>
        <property name="minimumHeight"><number>32</number></property>
       </widget>
      </item>

@@ -4,6 +4,9 @@ import shutil
 import tempfile
 import subprocess
 import logging
+import re
+import signal
+import threading
 
 import qt
 import slicer
@@ -26,17 +29,19 @@ class SlicerVS(ScriptedLoadableModule):
 Automatic vestibular schwannoma (VS) segmentation from contrast-enhanced T1 (ceT1) MRI.
 
 Steps performed automatically for each input:
-1. Intensity normalization (0.5–99.9th percentile clipping, float32)
-2. nnU-Net v2 inference (5-fold ensemble, 3d_fullres)
+1. Intensity normalization (0.5-99.9th percentile clipping, float32)
+2. nnU-Net v2 inference (fast single-fold or accurate 5-fold mode)
 3. Optional keep-largest-region post-processing
 
 Input modes:
 - Select Volume nodes already loaded into the Slicer scene
 - Add individual files (.nrrd/.nii.gz) or an entire folder from disk
 
-Two models available:
-- Dataset502 (1000 ep, recommended): CrossMoDA + cystic / varied-spacing cases
-- Dataset501 (250 ep): CrossMoDA ceT1 only
+Backends:
+- NVIDIA CUDA and supported AMD ROCm GPUs (native ROCm path on Linux)
+- Apple MPS
+- Experimental DirectML with automatic CPU fallback
+- CPU fallback for other GPUs and integrated graphics
 """
         self.parent.acknowledgementText = (
             "Built with nnU-Net v2 (Isensee et al., Nature Methods 2021)."
@@ -54,6 +59,8 @@ class _SegWorker(qt.QObject):
     itemStatusChanged = qt.Signal(int, str)
     # item index, short message
     itemMessage      = qt.Signal(int, str)
+    # item index, file-only inference result
+    itemResultReady  = qt.Signal(int, object)
     # finished (all items processed or cancelled)
     finished         = qt.Signal()
     # log line
@@ -77,13 +84,13 @@ class _SegWorker(qt.QObject):
 
             self.itemStatusChanged.emit(idx, "running")
             try:
-                seg_node = self._logic.processItem(
+                result = self._logic.processItem(
                     item,
                     logCallback=lambda line: self.logLine.emit(line),
                 )
-                msg = seg_node.GetName() if seg_node else "done (no output loaded)"
-                self.itemStatusChanged.emit(idx, "done")
-                self.itemMessage.emit(idx, msg)
+                self.itemResultReady.emit(idx, result)
+            except InferenceCancelled:
+                self.itemStatusChanged.emit(idx, "cancelled")
             except Exception as exc:
                 if self._cancel:
                     self.itemStatusChanged.emit(idx, "cancelled")
@@ -107,6 +114,13 @@ _STATUS_COLORS = {
     "cancelled": "#e07800",
 }
 
+_QUALITY_VALUES = ("fast", "accurate")
+_DEVICE_VALUES = ("auto", "cuda", "cpu", "mps", "dml")
+
+
+class InferenceCancelled(Exception):
+    """Raised when the user cancels before a case has completed."""
+
 class SlicerVSWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -115,6 +129,8 @@ class SlicerVSWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self._worker = None
         self._thread = None
         self._queue  = []   # list of item dicts
+        self._runTempDir = None
+        self._destroying = False
 
     # ------------------------------------------------------------------
     def setup(self):
@@ -128,17 +144,35 @@ class SlicerVSWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         # Model is fixed to Dataset502 (1000 ep); no selector needed.
 
-        # Default paths: prefer the models/ directory bundled in this repo,
-        # then fall back to the original dev-machine path.
+        # Discover the common conda layouts used by Miniforge/Conda.
         module_dir = os.path.dirname(os.path.abspath(__file__))
+        user_home = os.path.expanduser("~")
+        env_candidates = [
+            os.environ.get("SLICERVS_ENV_PATH", ""),
+            os.path.join(user_home, "miniforge3", "envs", "vs_seg"),
+            os.path.join(user_home, "Miniforge3", "envs", "vs_seg"),
+            os.path.join(user_home, ".conda", "envs", "vs_seg"),
+            os.path.join(user_home, "miniconda3", "envs", "vs_seg"),
+            os.path.join(user_home, "anaconda3", "envs", "vs_seg"),
+        ]
+        for path in env_candidates:
+            if path and os.path.isfile(self.logic._findPythonCandidate(path)):
+                self.ui.condaEnvEdit.text = os.path.normpath(path)
+                break
+
+        # Prefer a model root that already contains the fast-mode checkpoint.
         bundled_models = os.path.normpath(os.path.join(module_dir, "..", "models"))
-        for path, widget in [
-            (r"C:\Users\wuche\.conda\envs\vs_seg", self.ui.condaEnvEdit),
-            (bundled_models,                         self.ui.resultsPathEdit),
-            (r"D:\VS\crossmoda2022_training\nnUNet_results", self.ui.resultsPathEdit),
-        ]:
-            if os.path.isdir(path) and not widget.text:
-                widget.text = path
+        model_candidates = [
+            os.environ.get("nnUNet_results", ""),
+            bundled_models,
+            r"D:\VS\crossmoda2022_training\nnUNet_results",
+        ]
+        existing_models = [p for p in model_candidates if p and os.path.isdir(p)]
+        ready_models = [p for p in existing_models if self.logic.hasCheckpoint(p, "2")]
+        if ready_models or existing_models:
+            self.ui.resultsPathEdit.text = os.path.normpath(
+                (ready_models or existing_models)[0]
+            )
 
         # Queue table
         self.ui.queueTable.setColumnCount(3)
@@ -162,6 +196,17 @@ class SlicerVSWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     # ------------------------------------------------------------------
     def cleanup(self):
+        self._destroying = True
+        if self._worker:
+            self._worker.requestCancel()
+        if self._thread:
+            self._thread.quit()
+            self._thread.wait()
+            self._thread = None
+            self._worker = None
+        if self._runTempDir:
+            shutil.rmtree(self._runTempDir, ignore_errors=True)
+            self._runTempDir = None
         self.removeObservers()
 
     # ------------------------------------------------------------------
@@ -234,12 +279,21 @@ class SlicerVSWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # ------------------------------------------------------------------
 
     def _updateRunButton(self):
+        running = self._thread is not None
         ready = (bool(self._queue)
                  and bool(self.ui.condaEnvEdit.text)
                  and bool(self.ui.resultsPathEdit.text)
-                 and self._thread is None)
+                 and not running)
         self.ui.runButton.enabled = ready
-        self.ui.cancelButton.enabled = self._thread is not None
+        self.ui.cancelButton.enabled = running
+        for name in (
+                "inputVolumeSelector", "addVolumeButton", "addFilesButton",
+                "addFolderButton", "removeButton", "clearButton",
+                "qualityComboBox", "deviceComboBox", "postprocessCheckBox",
+                "autoLoadCheckBox", "condaEnvEdit", "condaEnvBrowseButton",
+                "resultsPathEdit", "resultsPathBrowseButton"):
+            getattr(self.ui, name).enabled = not running
+        self.ui.queueTable.enabled = not running
 
     def onRun(self):
         if not self._queue:
@@ -250,6 +304,10 @@ class SlicerVSWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         dataset_id     = "502"   # fixed: Dataset502, 1000 ep
         postprocess    = self.ui.postprocessCheckBox.checked
         auto_load      = self.ui.autoLoadCheckBox.checked
+        quality_index  = int(self.ui.qualityComboBox.currentIndex)
+        device_index   = int(self.ui.deviceComboBox.currentIndex)
+        preset         = _QUALITY_VALUES[quality_index]
+        device         = _DEVICE_VALUES[device_index]
 
         try:
             self.logic.configure(
@@ -258,9 +316,37 @@ class SlicerVSWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 dataset_id=dataset_id,
                 postprocess=postprocess,
                 auto_load=auto_load,
+                preset=preset,
+                device=device,
             )
         except Exception as exc:
             slicer.util.errorDisplay(str(exc))
+            return
+
+        # Export MRML inputs on Slicer's main thread. The worker receives only
+        # file paths and never mutates the MRML scene.
+        self._runTempDir = tempfile.mkdtemp(prefix="slicer_vs_run_")
+        worker_items = []
+        try:
+            for index, item in enumerate(self._queue):
+                worker_item = dict(item)
+                if item["type"] == "node":
+                    input_path = os.path.join(
+                        self._runTempDir, f"input_{index:04d}.nrrd")
+                    slicer.util.exportNode(item["node"], input_path)
+                    worker_item = {
+                        "type": "staged_node",
+                        "path": input_path,
+                        "name": item["name"],
+                        "ref_node_id": item["node"].GetID(),
+                        "result_path": os.path.join(
+                            self._runTempDir, f"result_{index:04d}.nrrd"),
+                    }
+                worker_items.append(worker_item)
+        except Exception as exc:
+            shutil.rmtree(self._runTempDir, ignore_errors=True)
+            self._runTempDir = None
+            slicer.util.errorDisplay(f"Could not stage the input volume:\n{exc}")
             return
 
         # Reset all rows to Pending
@@ -270,14 +356,18 @@ class SlicerVSWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.logTextEdit.clear()
 
         self._thread = qt.QThread()
-        self._worker = _SegWorker(list(self._queue), self.logic)
+        self._worker = _SegWorker(worker_items, self.logic)
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)
         self._worker.itemStatusChanged.connect(self._onItemStatus)
         self._worker.itemMessage.connect(self._onItemMessage)
+        self._worker.itemResultReady.connect(self._onItemResult)
         self._worker.logLine.connect(self._appendLog)
         self._worker.finished.connect(self._onWorkerFinished)
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
 
         self._thread.start()
         self._updateRunButton()
@@ -288,14 +378,40 @@ class SlicerVSWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.cancelButton.enabled = False
 
     def _onItemStatus(self, idx, status):
+        if self._destroying:
+            return
         msg = self.ui.queueTable.item(idx, 2)
         self._setRowStatus(idx, status, msg.text() if msg else "")
 
     def _onItemMessage(self, idx, text):
+        if self._destroying:
+            return
         self._setRowStatus(
             idx,
             self.ui.queueTable.item(idx, 1).text().lower(),
             text)
+
+    def _onItemResult(self, idx, result):
+        if self._destroying:
+            return
+        message = result.get("display_message", result.get("output_path", "done"))
+        try:
+            if self.logic._auto_load:
+                ref_node_id = result.get("ref_node_id")
+                if ref_node_id:
+                    ref_node = slicer.mrmlScene.GetNodeByID(ref_node_id)
+                    if ref_node is None:
+                        raise RuntimeError("The reference volume was removed from the scene.")
+                else:
+                    ref_node = slicer.util.loadVolume(result["source_path"])
+                seg_node = self.logic.importSegmentation(
+                    result["seg_file"], ref_node)
+                message = seg_node.GetName()
+            self._setRowStatus(idx, "done", message)
+        except Exception as exc:
+            logging.exception(exc)
+            self._appendLog(f"[ERROR] Could not load result: {exc}")
+            self._setRowStatus(idx, "error", str(exc)[:120])
 
     def _setRowStatus(self, row, status, message):
         color = _STATUS_COLORS.get(status, "#888888")
@@ -313,15 +429,23 @@ class SlicerVSWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         mi.setText(message)
 
     def _appendLog(self, line):
+        if self._destroying:
+            return
         self.ui.logTextEdit.appendPlainText(line.rstrip())
         sb = self.ui.logTextEdit.verticalScrollBar()
         sb.setValue(sb.maximum)
 
     def _onWorkerFinished(self):
-        self._thread.quit()
-        self._thread.wait()
+        if self._thread:
+            self._thread.quit()
+            self._thread.wait()
         self._thread = None
         self._worker = None
+        if self._runTempDir:
+            shutil.rmtree(self._runTempDir, ignore_errors=True)
+            self._runTempDir = None
+        if self._destroying:
+            return
         self._updateRunButton()
         slicer.app.layoutManager().setLayout(
             slicer.vtkMRMLLayoutNode.SlicerLayoutFourUpView)
@@ -363,52 +487,91 @@ class SlicerVSLogic(ScriptedLoadableModuleLogic):
     def __init__(self):
         super().__init__()
         self._activeProc  = None   # current Popen; used for cancellation
+        self._cancel_event = threading.Event()
         self._conda_env   = ""
         self._nnunet_results = ""
         self._dataset_id  = "502"
         self._postprocess = True
         self._auto_load   = True
+        self._preset      = "accurate"
+        self._device      = "auto"
 
     # ------------------------------------------------------------------
     def configure(self, conda_env, nnunet_results, dataset_id,
-                  postprocess, auto_load):
+                  postprocess, auto_load, preset="accurate", device="auto"):
         if dataset_id not in self.DATASET_CONFIG:
             raise ValueError(f"Unknown dataset_id: {dataset_id}")
+        if preset not in _QUALITY_VALUES:
+            raise ValueError(f"Unknown inference preset: {preset}")
+        if device not in _DEVICE_VALUES:
+            raise ValueError(f"Unknown inference device: {device}")
         self._findPythonExe(conda_env)          # validate early
         self._findNormalizeScript()              # validate early
+        if not os.path.isdir(nnunet_results):
+            raise FileNotFoundError(
+                f"nnUNet_results directory not found: {nnunet_results}")
+        required_folds = ("2",) if preset == "fast" else ("0", "1", "2", "3", "4")
+        missing_folds = [
+            fold for fold in required_folds
+            if not self.hasCheckpoint(nnunet_results, fold, dataset_id)
+        ]
+        if missing_folds:
+            raise FileNotFoundError(
+                "Missing checkpoint_final.pth for fold(s) {} under:\n{}\n"
+                "Download and extract the model weights from the GitHub release."
+                .format(", ".join(missing_folds), nnunet_results)
+            )
         self._conda_env      = conda_env
         self._nnunet_results = nnunet_results
         self._dataset_id     = dataset_id
         self._postprocess    = postprocess
         self._auto_load      = auto_load
+        self._preset         = preset
+        self._device         = device
+        self._cancel_event.clear()
 
     def cancelCurrent(self):
-        if self._activeProc and self._activeProc.poll() is None:
-            self._activeProc.kill()
+        self._cancel_event.set()
+        proc = self._activeProc
+        if not proc or proc.poll() is not None:
+            return
+        self._terminateProcess(proc)
+
+    @staticmethod
+    def _terminateProcess(proc):
+        try:
+            if os.name == "nt":
+                result = subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                if result.returncode != 0 and proc.poll() is None:
+                    logging.warning(
+                        "taskkill could not terminate inference tree (rc=%s); "
+                        "killing the wrapper process.", result.returncode)
+                    proc.kill()
+            else:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except Exception:
+            proc.kill()
 
     # ------------------------------------------------------------------
     def processItem(self, item, logCallback=None):
-        """Process one queue item; returns vtkMRMLSegmentationNode or None."""
+        """Process one file-only queue item and return result paths."""
+        if self._cancel_event.is_set():
+            raise InferenceCancelled()
         cfg         = self.DATASET_CONFIG[self._dataset_id]
         python_exe  = self._findPythonExe(self._conda_env)
         script      = self._findNormalizeScript()
 
         work_dir = tempfile.mkdtemp(prefix="slicer_vs_")
         try:
-            # ---- Export input to a temp nrrd ----
-            if item["type"] == "node":
-                input_nrrd = os.path.join(work_dir, "input.nrrd")
-                slicer.util.exportNode(item["node"], input_nrrd)
-                ref_path = input_nrrd
-            else:
-                # Copy the file so the script works in an isolated dir
-                src  = item["path"]
-                ext  = ".nrrd" if src.lower().endswith(".nrrd") else \
-                       ".nii.gz" if src.lower().endswith(".nii.gz") else \
-                       os.path.splitext(src)[1]
-                dst  = os.path.join(work_dir, "input" + ext)
-                shutil.copy2(src, dst)
-                ref_path = dst
+            if self._cancel_event.is_set():
+                raise InferenceCancelled()
+            self._stageInputFile(item["path"], work_dir)
 
             # ---- Build subprocess environment ----
             env = os.environ.copy()
@@ -424,13 +587,14 @@ class SlicerVSLogic(ScriptedLoadableModuleLogic):
             path_key   = next((k for k in env if k.upper() == "PATH"), "PATH")
             extra      = [self._conda_env,
                           os.path.join(self._conda_env, "Scripts"),
-                          os.path.join(self._conda_env, "Library", "bin")]
+                          os.path.join(self._conda_env, "Library", "bin"),
+                          os.path.join(self._conda_env, "bin")]
             env[path_key] = os.pathsep.join(
                 [p for p in extra if os.path.isdir(p)] + [env.get(path_key, "")])
             env["nnUNet_results"]      = self._nnunet_results
             env["nnUNet_raw"]          = ""
             env["nnUNet_preprocessed"] = ""
-            env["nnUNet_n_proc_DA"]    = "4"
+            env["nnUNet_n_proc_DA"]    = "1"
             # Force UTF-8 stdout/stderr regardless of the Windows console
             # code page, so the parent-side decode below always matches.
             env["PYTHONIOENCODING"]    = "utf-8"
@@ -446,27 +610,49 @@ class SlicerVSLogic(ScriptedLoadableModuleLogic):
                 "-tr",            cfg["trainer"],
                 "--dataset-name", cfg["name"],
                 "--suffix",       "_seg",
+                "--preset",       self._preset,
+                "--device",       self._device,
+                "--postprocess" if self._postprocess else "--no-postprocess",
             ]
             if logCallback:
                 logCallback("Running: " + " ".join(cmd))
 
-            self._activeProc = subprocess.Popen(
+            process_options = {}
+            if os.name == "nt":
+                process_options["creationflags"] = getattr(
+                    subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            else:
+                process_options["start_new_session"] = True
+            proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", env=env,
+                **process_options,
             )
+            self._activeProc = proc
+            if self._cancel_event.is_set():
+                self._terminateProcess(proc)
+                raise InferenceCancelled()
             output_lines = []
-            for line in self._activeProc.stdout:
-                output_lines.append(line)
-                if logCallback:
-                    logCallback(line.rstrip())
-            self._activeProc.wait()
-            rc = self._activeProc.returncode
-            self._activeProc = None
+            try:
+                for line in proc.stdout:
+                    output_lines.append(line)
+                    if "[BACKEND_FALLBACK]" in line:
+                        # Do not retry a known-broken DirectML runtime for
+                        # every remaining item in the same queue.
+                        self._device = "cpu"
+                    if logCallback:
+                        logCallback(line.rstrip())
+                proc.wait()
+                rc = proc.returncode
+            finally:
+                self._activeProc = None
 
             if rc != 0:
                 tail = "".join(output_lines[-30:])
                 raise RuntimeError(
                     f"Inference failed (rc={rc}):\n{tail}")
+            if self._cancel_event.is_set():
+                raise InferenceCancelled()
 
             # ---- Locate the output _seg file ----
             # script saves as <stem>_seg<ext>; stem is "input"
@@ -480,39 +666,107 @@ class SlicerVSLogic(ScriptedLoadableModuleLogic):
                     + "".join(output_lines[-10:]))
             seg_file = os.path.join(work_dir, seg_candidates[0])
 
-            # ---- Optionally write back to original folder ----
+            # Keep the result outside work_dir before its cleanup. File inputs
+            # are written beside the source; staged scene inputs use runTempDir.
             if item["type"] == "file":
                 orig_dir  = os.path.dirname(item["path"])
-                base      = os.path.splitext(os.path.basename(item["path"]))[0]
-                if base.endswith(".nii"):      # handle .nii.gz double-ext
-                    base = base[:-4]
+                base, _   = self._splitMedicalExtension(
+                    os.path.basename(item["path"]))
                 out_path  = os.path.join(orig_dir, base + "_seg.nrrd")
-                shutil.copy2(seg_file, out_path)
-                if logCallback:
-                    logCallback(f"  Saved: {out_path}")
-
-            # ---- Load into Slicer scene ----
-            if not self._auto_load:
-                return None
-
-            if item["type"] == "node":
-                ref_node = item["node"]
             else:
-                ref_node = slicer.util.loadVolume(item["path"])
+                out_path = item["result_path"]
+            shutil.copy2(seg_file, out_path)
+            if logCallback:
+                logCallback(f"  Saved: {out_path}")
 
-            return self._importSegmentation(seg_file, ref_node)
+            return {
+                "seg_file": out_path,
+                "output_path": out_path,
+                "display_message": (
+                    out_path if item["type"] == "file" else "done (not loaded)"
+                ),
+                "source_path": item["path"],
+                "ref_node_id": item.get("ref_node_id"),
+            }
 
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
 
     # ------------------------------------------------------------------
-    def _findPythonExe(self, conda_env):
-        for candidate in [os.path.join(conda_env, "python.exe"),
-                          os.path.join(conda_env, "python")]:
+    @staticmethod
+    def _splitMedicalExtension(filename):
+        lower = filename.lower()
+        for extension in (".nii.gz", ".nrrd", ".nii", ".mha", ".mhd"):
+            if lower.endswith(extension):
+                return filename[:-len(extension)], filename[-len(extension):]
+        return os.path.splitext(filename)
+
+    def _stageInputFile(self, source, work_dir):
+        """Copy one input into the isolated work folder, including MHD data."""
+        _, extension = self._splitMedicalExtension(source)
+        destination = os.path.join(work_dir, "input" + extension)
+        if extension.lower() != ".mhd":
+            shutil.copy2(source, destination)
+            return destination
+
+        with open(source, "r", encoding="latin-1") as stream:
+            header = stream.read()
+        match = re.search(
+            r"(?im)^(\s*ElementDataFile\s*=\s*)(.+?)\s*$", header)
+        if not match:
+            raise ValueError(f"Invalid MHD header (ElementDataFile missing): {source}")
+
+        data_reference = match.group(2).strip().strip('"')
+        upper_reference = data_reference.upper()
+        if upper_reference == "LOCAL":
+            shutil.copy2(source, destination)
+            return destination
+        if upper_reference.startswith("LIST") or "%" in data_reference:
+            raise ValueError(
+                "MHD LIST/pattern sidecars are not supported. Convert this "
+                "image to .mha, .nrrd, or .nii.gz before inference.")
+
+        data_source = data_reference
+        if not os.path.isabs(data_source):
+            data_source = os.path.join(os.path.dirname(source), data_source)
+        if not os.path.isfile(data_source):
+            raise FileNotFoundError(
+                f"MHD sidecar file not found: {data_source}")
+
+        _, data_extension = os.path.splitext(data_source)
+        data_name = "input" + (data_extension or ".raw")
+        shutil.copy2(data_source, os.path.join(work_dir, data_name))
+        staged_header = header[:match.start(2)] + data_name + header[match.end(2):]
+        with open(destination, "w", encoding="latin-1", newline="") as stream:
+            stream.write(staged_header)
+        return destination
+
+    @classmethod
+    def hasCheckpoint(cls, results_root, fold, dataset_id="502"):
+        cfg = cls.DATASET_CONFIG[dataset_id]
+        checkpoint = os.path.join(
+            results_root,
+            cfg["name"],
+            f'{cfg["trainer"]}__nnUNetPlans__3d_fullres',
+            f"fold_{fold}",
+            "checkpoint_final.pth",
+        )
+        return os.path.isfile(checkpoint)
+
+    @staticmethod
+    def _findPythonCandidate(conda_env):
+        for relative_path in ("python.exe", "python", os.path.join("bin", "python")):
+            candidate = os.path.join(conda_env, relative_path)
             if os.path.isfile(candidate):
                 return candidate
+        return ""
+
+    def _findPythonExe(self, conda_env):
+        candidate = self._findPythonCandidate(conda_env)
+        if candidate:
+            return candidate
         raise FileNotFoundError(
-            f"python.exe not found in: {conda_env}\n"
+            f"Python executable not found in: {conda_env}\n"
             "Please verify the vs_seg environment path.")
 
     def _findNormalizeScript(self):
@@ -548,7 +802,7 @@ class SlicerVSLogic(ScriptedLoadableModuleLogic):
             "Set the SLICERVS_SCRIPT_PATH environment variable to its location."
             " (VSSEG_SCRIPT_PATH is also accepted for compatibility.)")
 
-    def _importSegmentation(self, seg_file, ref_node):
+    def importSegmentation(self, seg_file, ref_node):
         label_node = slicer.util.loadLabelVolume(seg_file)
         label_node.SetName(ref_node.GetName() + "_VS_seg")
 

@@ -1,0 +1,16 @@
+name: vs_seg
+# Experimental Windows GPU environment for DirectML-compatible AMD, Intel,
+# and NVIDIA adapters, including many integrated GPUs. If an nnU-Net operator
+# is unsupported, SlicerVS automatically retries the case on CPU.
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - torch==2.3.1
+      - torchvision==0.18.1
+      - torch-directml==0.2.4.dev240815
+      - nnunetv2==2.8.1
+      - SimpleITK
+      - numpy

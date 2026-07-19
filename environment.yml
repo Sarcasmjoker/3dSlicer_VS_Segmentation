@@ -1,5 +1,5 @@
 name: vs_seg
-# Conda environment for SlicerVS inference (nnU-Net v2 + PyTorch with CUDA).
+# NVIDIA CUDA environment for SlicerVS inference.
 #
 # Usage:
 #   conda env create -f environment.yml
@@ -33,6 +33,6 @@ dependencies:
       - --extra-index-url https://download.pytorch.org/whl/cu128
       - torch==2.8.0+cu128
       - torchvision==0.23.0+cu128
-      - nnunetv2
+      - nnunetv2==2.8.1
       - SimpleITK
       - numpy

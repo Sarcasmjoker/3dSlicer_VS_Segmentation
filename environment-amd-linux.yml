@@ -1,0 +1,15 @@
+name: vs_seg
+# AMD ROCm environment for Linux. Confirm the ROCm version supported by the
+# installed driver and GPU before use. PyTorch exposes ROCm through torch.cuda.
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/rocm6.4
+      - torch==2.8.0+rocm6.4
+      - torchvision==0.23.0+rocm6.4
+      - nnunetv2==2.8.1
+      - SimpleITK
+      - numpy
